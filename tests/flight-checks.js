@@ -49,6 +49,10 @@ async function flightChecks() {
   const { win, doc, z } = world;
   const button = (id) => doc.getElementById(id).click();
   assert(z && !win.flightFailed, 'scene initialized');
+  assert(
+    new URL(win.location.href).searchParams.get('seed') === String(z.seed),
+    'the address carries the resolved seed',
+  );
   assert(z.ready && doc.getElementById('loading').classList.contains('gone'), 'the veil held until the first frame was drawn, then lifted');
   const gate = doc.getElementById('begin');
   assert(
@@ -1050,6 +1054,11 @@ async function flightChecks() {
   noSeed.searchParams.delete('seed');
   const again = await openWorld(noSeed.href);
   assert(again.z.seed === left.seed && again.z.resumed, 'reopening without a seed continues the remembered world');
+  const againUrl = new URL(again.win.location.href);
+  assert(againUrl.searchParams.get('seed') === String(left.seed), 'a seedless load writes the resolved seed into the address');
+  for (const [key, value] of noSeed.searchParams) {
+    assert(againUrl.searchParams.get(key) === value, 'writing the seed leaves the rest of the query intact');
+  }
   assert(!again.z.intro.beat && again.z.intro.ended === null, 'a remembered flight resumes without the opening');
   assert(
     ['x', 'y', 'z', 'heading', 't'].every((k) => Math.abs(again.z.state[k] - left[k]) < 0.000001) &&
@@ -1084,6 +1093,10 @@ async function flightChecks() {
   assert(
     fresh.z.seed === (left.seed + 1) >>> 0 && !fresh.z.resumed && fresh.z.state.t === 0,
     'a seed in the address opens that world from its start',
+  );
+  assert(
+    new URL(fresh.win.location.href).searchParams.get('seed') === String((left.seed + 1) >>> 0),
+    'an explicit seed stays in the address as given',
   );
   assert(fresh.z.volume === 0.4 && fresh.z.muted, 'settings carry over to another world');
   assert(fresh.z.intro.beat === 'side', 'another world opens with the opening again');

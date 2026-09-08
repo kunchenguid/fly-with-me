@@ -146,6 +146,7 @@ const storedFlight = remember.read(RESUME_KEY);
 // ---------------------------------------------------------------------------
 // Seed. ?seed=<number> reproduces a world and always wins; without one the
 // remembered world continues, and with nothing remembered every visit is new.
+// The address always carries the resolved seed so a copied URL is that world.
 // ---------------------------------------------------------------------------
 const params = new URLSearchParams(location.search);
 // `?profile=1` arms the renderer's timestamp queries and the raw frame trace
@@ -162,9 +163,9 @@ if (!Number.isFinite(seed))
   seed = finite(storedFlight?.seed, 0, 0xffffffff) ?? (Math.random() * 0xffffffff) >>> 0;
 seed = seed >>> 0;
 const shareUrl = new URL(location.href);
-shareUrl.search = '';
 shareUrl.searchParams.set('seed', String(seed));
 document.getElementById('shareLink').href = shareUrl.toString();
+history.replaceState(null, '', shareUrl);
 
 // ---------------------------------------------------------------------------
 // The look: palette anchors through the whole day, keyed in solar phase (0.25
