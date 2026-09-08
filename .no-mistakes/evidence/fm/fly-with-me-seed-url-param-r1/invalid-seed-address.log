@@ -1,0 +1,4 @@
+Scenario: invalid seed resolves to numeric visible URL while retaining address parameters and keeping share link seed-only
+result: "{\"runningProductReady\":true,\"flightFailed\":false,\"resolvedSeed\":3354728877,\"visibleAddress\":\"http://127.0.0.1:8123/index.html?seed=3354728877&profile=1&check=invalid-live\",\"visibleSeed\":\"3354728877\",\"retainedParams\":{\"profile\":\"1\",\"check\":\"invalid-live\"},\"shareLink\":\"http://127.0.0.1:8123/index.html?seed=3354728877\",\"shareQueryKeys\":[\"seed\"]}"
+help[1]:
+  Run `chrome-devtools-axi snapshot` to see current page state

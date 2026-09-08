@@ -1,0 +1,4 @@
+Scenario: seedless visit resolves a seed into the visible address and seed-only share link
+result: "{\"runningProductReady\":true,\"flightFailed\":false,\"resolvedSeed\":3821844631,\"visibleAddress\":\"http://127.0.0.1:8123/index.html?profile=1&check=evidence-seedless&seed=3821844631\",\"visibleSeed\":\"3821844631\",\"retainedParams\":{\"profile\":\"1\",\"check\":\"evidence-seedless\"},\"shareLink\":\"http://127.0.0.1:8123/index.html?seed=3821844631\",\"shareQueryKeys\":[\"seed\"]}"
+help[1]:
+  Run `chrome-devtools-axi snapshot` to see current page state

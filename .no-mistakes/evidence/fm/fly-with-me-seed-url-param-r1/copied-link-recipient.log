@@ -1,0 +1,4 @@
+Scenario: recipient opens the copied seed-only link and gets the same resolved world
+result: "{\"runningProductReady\":true,\"flightFailed\":false,\"recipientAddress\":\"http://127.0.0.1:8123/index.html?seed=3821844631\",\"recipientSeed\":3821844631,\"expectedCopiedSeed\":3821844631,\"sameWorld\":true}"
+help[1]:
+  Run `chrome-devtools-axi snapshot` to see current page state
