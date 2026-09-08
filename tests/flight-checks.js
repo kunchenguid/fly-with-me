@@ -1059,6 +1059,10 @@ async function flightChecks() {
   for (const [key, value] of noSeed.searchParams) {
     assert(againUrl.searchParams.get(key) === value, 'writing the seed leaves the rest of the query intact');
   }
+  assert(
+    new URL(again.doc.getElementById('shareLink').href).search === `?seed=${left.seed}`,
+    'the share link carries only the resolved seed',
+  );
   assert(!again.z.intro.beat && again.z.intro.ended === null, 'a remembered flight resumes without the opening');
   assert(
     ['x', 'y', 'z', 'heading', 't'].every((k) => Math.abs(again.z.state[k] - left[k]) < 0.000001) &&

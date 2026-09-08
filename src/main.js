@@ -162,10 +162,13 @@ let seed = parseInt(params.get('seed'), 10);
 if (!Number.isFinite(seed))
   seed = finite(storedFlight?.seed, 0, 0xffffffff) ?? (Math.random() * 0xffffffff) >>> 0;
 seed = seed >>> 0;
-const shareUrl = new URL(location.href);
+const addressUrl = new URL(location.href);
+addressUrl.searchParams.set('seed', String(seed));
+history.replaceState(null, '', addressUrl);
+const shareUrl = new URL(addressUrl);
+shareUrl.search = '';
 shareUrl.searchParams.set('seed', String(seed));
 document.getElementById('shareLink').href = shareUrl.toString();
-history.replaceState(null, '', shareUrl);
 
 // ---------------------------------------------------------------------------
 // The look: palette anchors through the whole day, keyed in solar phase (0.25
