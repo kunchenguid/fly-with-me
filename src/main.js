@@ -2496,17 +2496,17 @@ function endIntro(how) {
   cloudOrigin = state.t;
   dayRateTarget = 1;
 }
-// The title card. As the bird begins its turn toward the sunrise, "Kun Chen
+// The title card. Three seconds into the turn toward the sunrise, "Kun Chen
 // Presents" and then "Fly With Me" come up out of a soft blur, hold while the
 // sun clears the horizon and the bird faces it, and are gone before the
-// climb. It belongs to the opening: it starts on its beat only while the
-// opening is still playing, and once started it finishes even if the viewer
-// steers, since a card cut off halfway reads as a fault. It runs on the
-// simulation clock, so a pause holds it and the checks can step through it.
+// climb reaches the clouds. It belongs to the opening: it starts on its beat
+// only while the opening is still playing, and once started it finishes even
+// if the viewer steers, since a card cut off halfway reads as a fault. It runs
+// on the simulation clock, so a pause holds it and the checks can step through it.
 const TITLE = {
-  at: INTRO.side, // seconds after Begin: the turn toward the sun begins
+  at: INTRO.side + 3, // seconds after Begin: three seconds into the turn toward the sun
   presents: [0, 2.6], // seconds after `at` over which the small line comes up
-  name: [1.6, 5.6], // the title, fully up just after the sun crests
+  name: [1.6, 5.6], // the title, fully up a few seconds after the sun crests
   out: [11.5, 15], // both fade away
 };
 const title = { started: false, done: false, presents: 0, name: 0 };
