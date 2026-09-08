@@ -58,6 +58,10 @@ Each was chosen by eye on a review board and is the reference a change is compar
 - **The sky through a day**: more palette keys around dawn and dusk than at noon, a sun-side band, a rose belt opposite a low sun, a moon with its own lit face; above the deck the horizon keeps the day's hue and its sunward warmth, and the cloud sea's tops are lit from their own slope, warm sunward, blue in the hollows, blushing opposite a low sun, moonlit at night.
 - **Original procedural art throughout**: painted canvas textures, curved branches, canopy-oriented leaf normals, needle, frond and petal cards, grass and feathered wings; every tree one baked trunk, limbs and crown of painted cards; every ruin from one masonry kit, mossy at the foot. Nothing is downloaded.
 
+## Development and testing
+
+Running fly-with-me in a real browser can be resource intensive. Any browser tabs created for development and testing needs to be torn down immediately once it's not longer needed. Do not leave a live browser rendering fly-with-me in the background hanging.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
