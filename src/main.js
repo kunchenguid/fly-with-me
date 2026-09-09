@@ -64,6 +64,7 @@ import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { hash2, perlin2, fbm, ridged, sstep, mulberry32 } from './noise.js';
 import { createWaterMaterial } from './water.js';
 import { createMilkyWay } from './milky-way.js';
+import { LOOK, applyLook } from './color-grade.js';
 import { SWATCH, LEAVES, swatchColor, colorProblem, validateLibrary, validateBaked, BUDGET } from '../library/contract.js';
 import * as registry from '../library/index.js';
 // Shader motion follows simulation time, including pause and hidden tabs.
@@ -199,13 +200,13 @@ const P = (
   hemiGround: C(hemiGround),
   hemiI,
 });
-const NIGHT = P(0x071222, 0x10192e, 0x2e2831, 0x10121b, 0xffb070, 2.4, 0x213258, 0x0e1116, 0.6);
+const nightPalette = () => P(0x071222, 0x10192e, 0x2e2831, 0x10121b, 0xffb070, 2.4, 0x213258, 0x0e1116, 0.6);
 const L = {
   sat: 1,
   fogDensity: 0.00018,
   moon: { color: 0xa8bce8, intensity: 0.7 },
   keys: [
-    { t: 0.0, ...NIGHT },
+    { t: 0.0, ...nightPalette() },
     // astronomical dawn: the first hint of warmth low on the sun's side
     {
       t: 0.17,
@@ -251,7 +252,7 @@ const L = {
       t: 0.83,
       ...P(0x060c22, 0x0e1838, 0x243050, 0x0e1424, 0xffb070, 2.4, 0x263658, 0x121418, 0.55, 0x3d3452, 0x101838, 0x50384a),
     },
-    { t: 1.0, ...NIGHT },
+    { t: 1.0, ...nightPalette() },
   ],
   terrain: {
     sand: 0xc5bc85,
@@ -263,6 +264,7 @@ const L = {
   cloud: { white: 0xe1e4cb },
   bird: { body: 0xdad9bc, wing: 0x566e73, tip: 0x566e73 },
 };
+applyLook(L);
 const FOG_DENSITY = L.fogDensity;
 
 // ---------------------------------------------------------------------------
@@ -505,7 +507,7 @@ sun.shadow.camera.updateProjectionMatrix();
 sun.shadow.bias = -0.0002;
 sun.shadow.normalBias = 0.5;
 sun.shadow.radius = 3;
-sun.shadow.intensity = 0.55;
+sun.shadow.intensity = 0.55 * LOOK.shadowI;
 const shadowMatrix = uniform(sun.shadow.matrix);
 const receiveSoftShadow = Fn(([shadow]) => {
   const projected = shadowMatrix.mul(vec4(positionWorld, 1));
@@ -784,9 +786,9 @@ class SoftIllustratedLighting extends THREE.LightingModel {
 function litMaterial(colorNode, opts = {}) {
   const m = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0, ...(opts.basic || {}) });
   const base = vec4(colorNode);
-  const compressed = pow(max(base.rgb, vec3(0.0001)), vec3(0.9)).mul(0.94);
+  const compressed = pow(max(base.rgb, vec3(0.0001)), vec3(LOOK.materialPow)).mul(0.94);
   const value = dot(compressed, vec3(0.2126, 0.7152, 0.0722));
-  m.colorNode = vec4(mix(compressed, vec3(value), 0.08), base.a);
+  m.colorNode = vec4(mix(compressed, vec3(value), LOOK.materialGray), base.a);
   m.setupLightingModel = () => new SoftIllustratedLighting();
   m.receivedShadowNode = receiveSoftShadow;
   if (opts.emissiveNode) m.emissiveNode = opts.emissiveNode.mul(0.25);
@@ -3121,10 +3123,10 @@ volumeSlider.addEventListener('input', () => showMuted(audio.setVolume(volumeSli
 // Four samples here and nowhere else; see the renderer above.
 const scenePass = pass(scene, camera, { samples: 4 });
 const col = scenePass.getTextureNode();
-const glow = bloom(col, 0.23, 0.6, 1.1);
+const glow = bloom(col, LOOK.bloom.strength, LOOK.bloom.radius, LOOK.bloom.threshold);
 const post = new RenderPipeline(renderer);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = LOOK.exposure;
 post.outputColorTransform = false;
 // Everything past tone mapping is display-referred, in the eight bits per
 // channel a screen has, so the two intermediates the chain materialises hold
@@ -3154,12 +3156,13 @@ const softened = Fn(() => {
     sum.addAssign(neighbor.mul(weight));
     weights.addAssign(weight);
   }
-  return vec4(
-    mix(center.rgb, sum.div(weights), 0.65)
-      .mul(0.96)
-      .add(vec3(0.02, 0.025, 0.022)),
-    center.a,
-  );
+  const rgb = mix(center.rgb, sum.div(weights), 0.65)
+    .mul(LOOK.post.mul)
+    .add(vec3(LOOK.post.lift[0], LOOK.post.lift[1], LOOK.post.lift[2]))
+    .toVar();
+  rgb.assign(saturation(rgb, float(LOOK.post.sat)));
+  rgb.assign(mix(vec3(0.5), rgb, float(LOOK.post.contrast)));
+  return vec4(rgb, center.a);
 })();
 const softDisplay = convertToTexture(softened, null, null, LDR);
 post.outputNode = fxaa(softDisplay);
@@ -3171,7 +3174,7 @@ post.outputNode = fxaa(softDisplay);
 let dayPhase = SUNRISE.phase - INTRO.beforeSunrise / DAY_SECONDS;
 const _sunDir = new THREE.Vector3(),
   _moonDir = new THREE.Vector3();
-const BASE_EXPOSURE = 1.05;
+const BASE_EXPOSURE = LOOK.exposure;
 // Where the sun and the moon stand at a moment of the day clock. The moon
 // rides its own arc, up before dusk and gone before dawn. The flight reads
 // these too.
@@ -3221,12 +3224,12 @@ function updateAtmosphere(dt) {
     sun.position.copy(_sunDir);
     sun.color.copy(pal.sun);
     sun.intensity = pal.sunI * sunUp;
-    sun.shadow.intensity = 0.55;
+    sun.shadow.intensity = 0.55 * LOOK.shadowI;
   } else {
     sun.position.copy(_moonDir);
     sun.color.copy(MOON_COLOR);
     sun.intensity = L.moon.intensity * moonLight;
-    sun.shadow.intensity = 0.4;
+    sun.shadow.intensity = 0.4 * LOOK.shadowI;
   }
   // The shadow frame follows the bird, but only in whole shadow-map texels
   // across the light's plane, so the shadows drawn on the ground never crawl
