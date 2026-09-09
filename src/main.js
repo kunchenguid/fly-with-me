@@ -147,6 +147,7 @@ const storedFlight = remember.read(RESUME_KEY);
 // ---------------------------------------------------------------------------
 // Seed. ?seed=<number> reproduces a world and always wins; without one the
 // remembered world continues, and with nothing remembered every visit is new.
+// The address always carries the resolved seed so a copied URL is that world.
 // ---------------------------------------------------------------------------
 const params = new URLSearchParams(location.search);
 // `?profile=1` arms the renderer's timestamp queries and the raw frame trace
@@ -162,7 +163,10 @@ let seed = parseInt(params.get('seed'), 10);
 if (!Number.isFinite(seed))
   seed = finite(storedFlight?.seed, 0, 0xffffffff) ?? (Math.random() * 0xffffffff) >>> 0;
 seed = seed >>> 0;
-const shareUrl = new URL(location.href);
+const addressUrl = new URL(location.href);
+addressUrl.searchParams.set('seed', String(seed));
+history.replaceState(null, '', addressUrl);
+const shareUrl = new URL(addressUrl);
 shareUrl.search = '';
 shareUrl.searchParams.set('seed', String(seed));
 document.getElementById('shareLink').href = shareUrl.toString();
