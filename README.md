@@ -38,7 +38,7 @@
 
 ## Using it
 
-- The page opens on a white veil, then stands still behind one **Begin** button; nothing moves and no sound plays until you press it. Sound is synthesized in the browser, with an on/off switch and a volume slider that starts at half.
+- The page opens on a white veil, then stands still behind one **Begin** button; nothing moves and no sound plays until you press it. Sound is synthesized in the browser, with an on/off switch and a volume slider that starts at half. The controls dim after a few idle seconds and brighten as soon as you point at, touch, or focus them.
 - Do nothing and the bird flies itself. Drag with the left button to orbit the bird, and the view stays where you leave it; drag with the right button to steer, up and down as well, and the bird flies where you look. The wheel zooms, touch steers, and the arrow keys nudge a turn or a climb that fades after a few seconds.
 - **Pause**, or space with the canvas focused, stops the flight and the sound together. A reduced-motion preference starts the page paused.
 - The page remembers your sound settings, your framing, and the bird's exact place, course and time of day, and resumes there after Begin. `?seed=<number>` in the address opens that world fresh; the share link carries the seed.
