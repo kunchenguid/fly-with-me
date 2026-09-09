@@ -200,13 +200,13 @@ const P = (
   hemiGround: C(hemiGround),
   hemiI,
 });
-const NIGHT = P(0x071222, 0x10192e, 0x2e2831, 0x10121b, 0xffb070, 2.4, 0x213258, 0x0e1116, 0.6);
+const nightPalette = () => P(0x071222, 0x10192e, 0x2e2831, 0x10121b, 0xffb070, 2.4, 0x213258, 0x0e1116, 0.6);
 const L = {
   sat: 1,
   fogDensity: 0.00018,
   moon: { color: 0xa8bce8, intensity: 0.7 },
   keys: [
-    { t: 0.0, ...NIGHT },
+    { t: 0.0, ...nightPalette() },
     // astronomical dawn: the first hint of warmth low on the sun's side
     {
       t: 0.17,
@@ -252,7 +252,7 @@ const L = {
       t: 0.83,
       ...P(0x060c22, 0x0e1838, 0x243050, 0x0e1424, 0xffb070, 2.4, 0x263658, 0x121418, 0.55, 0x3d3452, 0x101838, 0x50384a),
     },
-    { t: 1.0, ...NIGHT },
+    { t: 1.0, ...nightPalette() },
   ],
   terrain: {
     sand: 0xc5bc85,
