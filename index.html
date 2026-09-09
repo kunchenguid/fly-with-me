@@ -450,36 +450,33 @@
         const hud = document.getElementById('hud');
         const idleMs = 2800;
         let idleTimer = 0;
-        const wake = () => {
-          hud.classList.remove('is-idle');
-          hud.classList.add('is-awake');
-          armIdle();
-        };
         const armIdle = () => {
           clearTimeout(idleTimer);
+          if (hud.inert) return;
           idleTimer = setTimeout(() => {
             hud.classList.add('is-idle');
             hud.classList.remove('is-awake');
           }, idleMs);
         };
+        const wake = () => {
+          if (hud.inert) return;
+          hud.classList.remove('is-idle');
+          hud.classList.add('is-awake');
+          armIdle();
+        };
+        const syncActive = () => {
+          clearTimeout(idleTimer);
+          hud.classList.remove('is-idle', 'is-awake');
+          if (!hud.inert) armIdle();
+        };
+        new MutationObserver(syncActive).observe(hud, { attributes: true, attributeFilter: ['inert'] });
         hud.addEventListener('pointerenter', wake);
-        hud.addEventListener(
-          'pointerdown',
-          (event) => {
-            if (!hud.classList.contains('is-idle')) return;
-            if (event.pointerType === 'touch') {
-              event.preventDefault();
-              event.stopPropagation();
-            }
-            wake();
-          },
-          true,
-        );
+        hud.addEventListener('pointerdown', wake, true);
         hud.addEventListener('focusin', wake);
         hud.addEventListener('pointerleave', () => {
           if (!hud.contains(document.activeElement)) armIdle();
         });
-        armIdle();
+        syncActive();
       })();
     </script>
     <!-- The engine. Modules need a server (a local one is fine); the page cannot run from file://. -->
