@@ -27,7 +27,7 @@ export const SWATCH = {
   heather: 0x8f7d86,
   tundra: 0x90997a,
   frost: 0xbcc6bf,
-  snow: 0xe1e5d2,
+  snow: 0xf6f4ee,
   jungle: 0x5e8d49,
   jungleDeep: 0x4c7d44,
   amber: 0xb8a457,

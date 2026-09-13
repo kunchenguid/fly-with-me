@@ -1063,6 +1063,181 @@ async function flightChecks() {
     }
   }
 
+
+  // Read the snow's pixels, not shader text. The rule the old inverted line
+  // broke: the snow line sits lower in cold country than in warm, and gentle
+  // ground well above its line wears snow while gentle ground well under it
+  // does not. The range is steep, so a gentle snowfield is a cold-country
+  // thing: walk the rolling CPU window toward the coldest ground until one is
+  // in reach, then toward the tallest until a summit is, look straight down at
+  // the isolated, normally lit terrain over the snowfield and over bare
+  // ground, then stand over the summit and ask for its plume.
+  {
+    const savedState = { ...z.state }, savedPhase = z.dayPhase, savedCam = { ...z.cam };
+    const scene = z.objects.terrain.parent, camera = z.camera;
+    const savedUp = camera.up.clone();
+    const visibility = scene.children.map(o => [o, o.visible]);
+    try {
+      const cell = z.surface.cell, hop = 6000;
+      const slope = (x, zz) => {
+        const dx = (z.heightAt(x + cell, zz) - z.heightAt(x - cell, zz)) / (2 * cell);
+        const dz = (z.heightAt(x, zz + cell) - z.heightAt(x, zz - cell)) / (2 * cell);
+        return 1 - 1 / Math.sqrt(1 + dx * dx + dz * dz); // the shader's 1 - normal.y
+      };
+      // a block of ground the snow holds on in full, or stays off: every 16 m
+      // sample within reach under the hold's slope and passing the height test
+      const block = (x, zz, reach, test) => {
+        for (let dz = -reach; dz <= reach; dz += 16) for (let dx = -reach; dx <= reach; dx += 16) {
+          const a = x + dx, b = zz + dz;
+          if (slope(a, b) >= 0.09 || !test(z.heightAt(a, b), z.snowLineAt(a, b))) return false;
+        }
+        return true;
+      };
+      // how far a 32 m block of such ground stands over the line at its lowest
+      // sample; the shader's exposure and wobble move the line by up to 100 m,
+      // so the higher the block the surer its snow
+      const clearance = (x, zz) => {
+        let least = Infinity;
+        for (let dz = -16; dz <= 16; dz += 16) for (let dx = -16; dx <= 16; dx += 16) {
+          const a = x + dx, b = zz + dz;
+          if (slope(a, b) >= 0.09) return -Infinity;
+          least = Math.min(least, z.heightAt(a, b) - z.snowLineAt(a, b));
+        }
+        return least;
+      };
+      let snowfield = null, ground = null, summit = null, coldest = null, warmest = null;
+      // one pass over the window: the coldest and warmest low ground by its
+      // biome, the snowfield, the bare ground, the tallest local maximum, and
+      // the window's own coldest, warmest and tallest cells for the walk
+      const scan = () => {
+        const [cx, cz] = z.surface.center;
+        let cold = null, warm = null, tall = null;
+        for (let iz = cz - 240; iz <= cz + 240; iz += 2)
+          for (let ix = cx - 240; ix <= cx + 240; ix += 2) {
+            const x = ix * cell, zz = iz * cell, h = z.heightAt(x, zz);
+            if (h < 3) continue;
+            const line = z.snowLineAt(x, zz);
+            if (!cold || line < cold.line) cold = { x, z: zz, line };
+            if (!warm || line > warm.line) warm = { x, z: zz, line };
+            if (!tall || h > tall.h) tall = { x, z: zz, h };
+            if (h < 200) {
+              const w = z.biomeAt(x, zz);
+              let best = 0;
+              for (let k = 1; k < w.length; k++) if (w[k] > w[best]) best = k;
+              if (w[best] > 0.6) {
+                const t = z.library.biomes[best].climate[0];
+                // the line is read here, inside the window that holds this cell
+                if (!coldest || t < coldest.t) coldest = { t, line };
+                if (!warmest || t > warmest.t) warmest = { t, line };
+              }
+            }
+            if (h > line + 60) {
+              const over = clearance(x, zz);
+              if (over > 60 && (!snowfield || over > snowfield.over)) snowfield = { x, z: zz, h, over };
+            }
+            if (!ground && h > 20 && h < line - 150 && block(x, zz, 48, (hh, l) => hh > 10 && hh < l - 120)) ground = { x, z: zz, h };
+            if (h > z.deck + 180 && (!summit || h > summit.h) && Math.abs(ix - cx) < 200 && Math.abs(iz - cz) < 200) {
+              // climb the grid to its local maximum, which is the plume's summit
+              let sx = x, sz = zz, sh = h;
+              for (let steps = 0; steps < 40; steps++) {
+                let bx = 0, bz = 0, bh = sh;
+                for (let dz = -16; dz <= 16; dz += 16) for (let dx = -16; dx <= 16; dx += 16) { const hh = z.heightAt(sx + dx, sz + dz); if (hh > bh) { bh = hh; bx = dx; bz = dz; } }
+                if (bh === sh) break;
+                sx += bx; sz += bz; sh = bh;
+              }
+              if (!summit || sh > summit.h) summit = { x: sx, z: sz, h: sh };
+            }
+          }
+        return { cold, warm, tall };
+      };
+      // The walk moves onto the window's extreme cell; a window whose extreme
+      // lies near its own center, or in a window already walked, is a local
+      // extreme, so it carries on the way it came by a whole hop.
+      let heading = [1, 0];
+      const seen = [];
+      const toward = (spot) => {
+        const dx = spot.x - z.state.x, dz = spot.z - z.state.z, d = Math.hypot(dx, dz);
+        seen.push([z.state.x, z.state.z]);
+        if (d > 1500 && !seen.some(([sx, sz]) => Math.hypot(sx - spot.x, sz - spot.z) < 3000)) {
+          heading = [dx / d, dz / d];
+          z.state.x = spot.x;
+          z.state.z = spot.z;
+        } else {
+          z.state.x += heading[0] * hop;
+          z.state.z += heading[1] * hop;
+        }
+        z.step(0.001);
+      };
+      for (let hops = 0; hops < 24; hops++) {
+        const { cold, warm, tall } = scan();
+        const snowy = snowfield && (snowfield.over > 100 || hops >= 10);
+        if (snowy && ground && summit && coldest && warmest && warmest.t - coldest.t > 0.3) break;
+        toward(!snowy ? cold : !summit ? tall : warm);
+      }
+      // the bare ground under the line is read in the snowfield's own country,
+      // where the old rule put the snow
+      if (snowfield) {
+        Object.assign(z.state, { x: snowfield.x, z: snowfield.z });
+        z.step(0.001);
+        const [cx, cz] = z.surface.center;
+        let near = null;
+        for (let iz = cz - 240; iz <= cz + 240 && !near; iz += 2)
+          for (let ix = cx - 240; ix <= cx + 240 && !near; ix += 2) {
+            const x = ix * cell, zz = iz * cell, h = z.heightAt(x, zz);
+            if (h > 20 && h < z.snowLineAt(x, zz) - 150 && block(x, zz, 48, (hh, l) => hh > 10 && hh < l - 120)) near = { x, z: zz, h };
+          }
+        ground = near || ground;
+      }
+      assert(coldest && warmest && warmest.t - coldest.t > 0.3, 'the walk crosses both cold and warm country');
+      assert(coldest.line < warmest.line, `the snow line sits lower in cold country than in warm (${Math.round(coldest.line)} m at ${coldest.t} against ${Math.round(warmest.line)} m at ${warmest.t})`);
+      assert(snowfield && ground, `the walk supplies a gentle snowfield above the snow line and gentle ground under it (${seen.length} hops)`);
+      assert(summit, `the range supplies a summit above the deck for a plume (${seen.length} hops)`);
+      const size = 128, height = 100;
+      const render = async (spot) => {
+        Object.assign(z.cam, { yaw: 0, pitch: 0.2, dist: 42 });
+        Object.assign(z.state, { x: spot.x, z: spot.z, y: spot.h + height });
+        z.dayPhase = 0.5;
+        z.step(0.001);
+        for (const [o] of visibility) o.visible = o === z.objects.terrain || o.isLight === true;
+        camera.up.set(0, 0, -1);
+        camera.position.set(spot.x, spot.h + height, spot.z);
+        camera.lookAt(spot.x, spot.h, spot.z);
+        camera.updateMatrixWorld(true);
+        const before = z.perf.frames, deadline = Date.now() + 10000;
+        win.dispatchEvent(new win.Event('resize'));
+        while (z.perf.frames === before && Date.now() < deadline) await wait(10);
+        if (z.perf.frames === before) throw new Error('snow redraw did not finish');
+        return z.capture(size, size);
+      };
+      const center = (picture, channel) => {
+        let sum = 0, n = 0;
+        for (let y = size / 2 - 24; y < size / 2 + 24; y++) for (let x = size / 2 - 24; x < size / 2 + 24; x++) { sum += picture.data[(y * size + x) * 4 + channel]; n++; }
+        return sum / n;
+      };
+      // the capture is the scene's own light, before the display chain: the
+      // noon sun is warm and the sky cyan, so a white reads a little green
+      // there, while ground and rock read as a color or as dark
+      const rgb = (picture) => [0, 1, 2].map(channel => center(picture, channel));
+      const luma = ([r, g, b]) => r * 0.2126 + g * 0.7152 + b * 0.0722;
+      const snowPic = rgb(await render(snowfield)), groundPic = rgb(await render(ground));
+      const read = `snow ${luma(snowPic).toFixed(2)} at ${Math.round(snowfield.over)} m over the line, ground ${luma(groundPic).toFixed(2)} at ${Math.round(ground.h)} m`;
+      assert(luma(snowPic) > luma(groundPic) * 1.25, `a gentle snowfield above the snow line renders brighter than the bare ground under it (${read})`);
+      assert(Math.min(...snowPic) > Math.max(...snowPic) * 0.6 && luma(snowPic) > 0.5, `the snowfield renders as near-neutral white (${snowPic.map(v => v.toFixed(2)).join(' ')})`);
+      for (const [o, visible] of visibility) o.visible = visible;
+      Object.assign(z.state, { x: summit.x, z: summit.z, y: summit.h + 200 });
+      for (let i = 0; i < 50; i++) z.step(0.05);
+      const plumes = z.plumes;
+      assert(plumes.count >= 1 && plumes.summits.some((_, k) => k % 3 === 0 && Math.hypot(plumes.summits[k] - summit.x, plumes.summits[k + 2] - summit.z) < 40), 'the tallest summit in reach carries a plume');
+    } finally {
+      Object.assign(z.state, savedState);
+      Object.assign(z.cam, savedCam);
+      z.dayPhase = savedPhase;
+      camera.up.copy(savedUp);
+      z.step(0.001);
+      for (const [o, visible] of visibility) o.visible = visible;
+    }
+  }
+
   button('pauseBtn');
   await wait(1000);
   assert(z.state.t > pausedTime + 360 && z.audioState === 'running', 'resume renders the streamed world');

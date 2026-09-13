@@ -13,6 +13,7 @@ import {
 } from 'three/webgpu';
 import {
   Fn,
+  If,
   uniform,
   textureLoad,
   positionLocal,
@@ -42,6 +43,7 @@ import {
   select,
   clamp,
   attribute,
+  instanceIndex,
   fract,
   length,
   step,
@@ -63,7 +65,7 @@ import {
 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
-import { hash2, perlin2, fbm, ridged, sstep, mulberry32 } from './noise.js';
+import { hash2, perlin2, fbm, ridgedMulti, pyramidPeaks, sstep, mulberry32 } from './noise.js';
 import { createWaterMaterial } from './water.js';
 import { createMilkyWay } from './milky-way.js';
 import { LOOK, applyLook } from './color-grade.js';
@@ -82,7 +84,19 @@ const WATER_CELLS = 132;
 const WATER_CELL = CELL * 4;
 const SEA_LEVEL = 0;
 const DECK_Y = 520; // cloud deck altitude
+// The range: a warped ridged massif carrying a lattice of pyramidal summits
+// (sampleWorld). The tallest reach 1040 to 1080 m over the check seeds, twice
+// the deck, so the flight looks further ahead than its clearance does.
+const PEAKS = { cell: 2400, radius: 850, power: 1.7, lift: 900, massif: 640 };
+// The snow line: base + slope * T from the climate's own temperature with the
+// altitude cooling undone, so cold country holds snow low and deserts only on
+// top. The GPU snow rule and the tree line both read it.
+const SNOW_LINE = { base: 200, slope: 380 };
+function snowLineAt(temp, h) {
+  return SNOW_LINE.base + SNOW_LINE.slope * (temp + Math.max(0, h) / 2600);
+}
 const SPEED = 40; // bird speed, m/s
+const CLIMB = 11; // its fastest climb, m/s
 const DAY_SECONDS = 600; // one full turn of the day clock
 const wrapAngle = (a) => a - Math.round(a / (Math.PI * 2)) * Math.PI * 2;
 // Night is a quarter of the cycle. The sun keeps its own clock, `solar`: one
@@ -329,9 +343,19 @@ function sampleWorld(x, z, out) {
   const region = fbm(kx / (CLIMATE_SCALE * 0.9) + 21.3, kz / (CLIMATE_SCALE * 0.9) - 8.8, S3 + 19, 2) * 0.5 + 0.5;
   const land = sstep(0.4, 0.6, cont);
   const hills = fbm(wx / 520, wz / 520, S1 + 11, 4);
-  const mountainMask = sstep(0.58, 0.86, cont);
-  const ridge = ridged(wx / 1100, wz / 1100, S1 + 23, 2);
-  let h = -70 + 150 * land + hills * (10 + 38 * land) + Math.pow(ridge, 1.7) * 680 * mountainMask;
+  const mountainMask = sstep(0.56, 0.82, cont);
+  // The massif: a warped four-octave ridged multifractal, so crests carry
+  // arêtes and gullies. On it, the pyramids: they stand in barely warped
+  // coordinates (the 700 m continental warp would bend their faces into
+  // loaves), and the massif quiets under each so its faces stay clean sheets.
+  const rx = wx + 260 * fbm(wx / 900 + 3.3, wz / 900 - 1.1, S1 + 29, 2),
+    rz = wz + 260 * fbm(wx / 900 - 2.2, wz / 900 + 4.4, S1 + 31, 2);
+  const ridge = ridgedMulti(rx / 1600, rz / 1600, S1 + 23, 4);
+  const px = x + 90 * fbm(x / 700 + 1.3, z / 700 + 2.1, S1 + 61, 2),
+    pz = z + 90 * fbm(x / 700 - 3.7, z / 700 + 0.4, S1 + 63, 2);
+  const peak = pyramidPeaks(px, pz, S1 + 47, PEAKS.cell, PEAKS.radius, PEAKS.power);
+  const lift = (ridge * PEAKS.massif * (1 - 0.45 * sstep(0.05, 0.5, peak)) + peak * PEAKS.lift) * mountainMask;
+  let h = -70 + 150 * land + hills * (10 + 38 * land) + lift;
   // a gentle shelf so beaches are wide and the shoreline never zigzags
   const shelf = sstep(-30, 30, h);
   h = h * (0.55 + 0.45 * shelf) + (1 - shelf) * -6;
@@ -835,6 +859,37 @@ const uOrigin = uniform(new THREE.Vector2(0, 0));
 const uWaterOrigin = uniform(new THREE.Vector2(0, 0));
 const palette = {};
 for (const k of Object.keys(L.terrain)) palette[k] = uniform(C(L.terrain[k]));
+// The snow and the alpine rock. Colors are the painted look's own: a sky-blue
+// shade, a lavender shade while the sun sits low, dark blue-grey rock warmer
+// toward the sun, an ochre band, blue-white ice.
+const K = (hex) => {
+  const c = C(hex);
+  return vec3(c.r, c.g, c.b);
+};
+const SNOW = {
+  shade: K(0xb4c8ea),
+  shadeLow: K(0xa4accb),
+  rock: K(0x565963),
+  ochre: K(0x9c7c4c),
+  iceLit: K(0xe2f1f7),
+  iceShade: K(0x8fb3d6),
+  aspect: 50, // meters the line rises on the sunny side
+  wobble: 45, // meters of slow wander in the line
+  drift: 1.6, // meters of line per meter of hollow
+  hold: 0.09, // slope (1 - normal.y) up to which snow holds fully: 25 degrees
+  flute: 0.16, // slope the fall-line flutes move the hold by
+  ledge: 0.25, // snow on the strata of the upper faces
+  band: 0.7, // strength of the ochre band
+  rib: 0.3, // darkening of the rock ribs between flutes
+  rockBand: 320, // meters of alpine rock under the snow line
+  iceReach: 240, // meters the ice reaches below the snow
+  glow: 0.4, // alpenglow share on snow when the sun sits low
+  rockGlow: 0.3, // and on the alpine rock
+  skyLift: 1.4, // how much the sky lights shaded snow
+};
+const NOON_XZ = vec2(-0.45, 0.55).normalize(); // the sun's horizontal direction at noon (skyBodies)
+const WIND = vec2(0.83, 0.56), // one world wind: snow streaks and summit plumes
+  WIND_PERP = vec2(-0.56, 0.83);
 const biomeColors = BIOMES.map((biome) => ({
   base: libraryColor(`biome ${biome.id}.ground.base`, biome.ground.base),
   alt: libraryColor(`biome ${biome.id}.ground.alt`, biome.ground.alt),
@@ -904,6 +959,13 @@ let terrainMat;
     moist = a.z.add(b.z).add(c.z).div(3),
     region = a.w.add(b.w).add(c.w).div(3);
   const slope = float(1).sub(varying(surfaceNormal).normalize().y);
+  // Curvature from the same heightfield, in the vertex stage: the mean of the
+  // neighbours minus the vertex, in meters, hollows positive, crests negative,
+  // on 48 m and 96 m stencils.
+  const around = (r) =>
+    loadCell(ix.sub(r), iz).x.add(loadCell(ix.add(r), iz).x).add(loadCell(ix, iz.sub(r)).x).add(loadCell(ix, iz.add(r)).x).mul(0.25).sub(hv);
+  const lapBroad = varying(around(3)),
+    lapWide = varying(around(6));
 
   // The GPU side of biomeWeights: the same cells, the same sharpening, on
   // the triangle's own climate, so ground color and placement agree.
@@ -911,6 +973,45 @@ let terrainMat;
   const ct = climateAxisNode(temp),
     cm = climateAxisNode(moist),
     cr = climateAxisNode(region);
+  // Snow. The line is snowLineAt on the GPU; exposure moves it: faces toward
+  // the noon sun melt out higher, hollows keep drifts lower, crests blow bare,
+  // and a slow wobble keeps it from reading as a contour. Snow holds fully
+  // only under 25 degrees; steeper faces are rock with snow in the fall-line
+  // flutes, on level strata and along the crests, so a summit pyramid reads
+  // as rock and snow the way the great Himalayan peaks do. The line's wobble
+  // is a vertex varying and the rest of the line is arithmetic, so the line
+  // costs nothing; the flutes, strata, ice, ochre and streaks cost fourteen
+  // noise taps a fragment and run only where they can show: near or above
+  // the line, in a deep hollow just under it, or on a steep face in the rock
+  // band. The lowlands, most of any frame, pay nothing for the snow.
+  const wobble = varying(
+    mx_noise_float(vec2(wx, wz).mul(1 / 260))
+      .mul(SNOW.wobble)
+      .add(mx_noise_float(vec2(wx, wz).mul(1 / 70)).mul(SNOW.wobble * 0.3)),
+  );
+  // the snow's cover, shared by the color and by the sky lift of shaded snow
+  const snowAmount = float(0).toVar();
+  const snow = (() => {
+    const n = varying(surfaceNormal).normalize();
+    const nl = dot(n, uSunDir);
+    const xz = positionWorld.xz;
+    const baseTemp = temp.add(h.div(2600.0));
+    const downhill = normalize(n.xz.add(vec2(0.0001, 0.0)));
+    const aspect = dot(downhill, NOON_XZ).mul(smoothstep(0.04, 0.35, slope));
+    const line = baseTemp.mul(SNOW_LINE.slope).add(SNOW_LINE.base).add(aspect.mul(SNOW.aspect)).add(wobble).sub(lapBroad.mul(SNOW.drift));
+    const edge = h.sub(line);
+    const steep = smoothstep(SNOW.hold - 0.05, SNOW.hold + 0.2, slope);
+    const alpine = smoothstep(line.sub(SNOW.rockBand), line.sub(30.0), h);
+    const terminator = smoothstep(-0.02, 0.32, nl);
+    const glowAmt = uLowSun.mul(smoothstep(0.0, 0.5, nl)).mul(SNOW.glow);
+    const cold = smoothstep(0.62, 0.42, baseTemp);
+    const basin = smoothstep(3.0, 14.0, lapWide);
+    const gate = edge
+      .greaterThan(-60.0)
+      .or(basin.greaterThan(0.0).and(edge.greaterThan(-SNOW.iceReach - 10)))
+      .or(slope.greaterThan(0.16).and(alpine.greaterThan(0.0)));
+    return { xz, downhill, edge, steep, alpine, terminator, glowAmt, cold, basin, gate };
+  })();
   const colorNode = Fn(() => {
     const macro = smoothstep(0.18, 0.48, mx_noise_float(positionWorld.xz.mul(0.012)));
     const distances = BIOMES.map(({ climate: [t0, m0, r0] }) =>
@@ -930,10 +1031,81 @@ let terrainMat;
     ground.divAssign(total);
     rock.divAssign(total);
     ground.assign(mix(palette.seaFloor, ground, smoothstep(-10.0, 0.5, h)));
-    ground.assign(mix(ground, rock, smoothstep(0.32, 0.55, slope)));
-    const snowLine = temp.mul(-420.0).add(560.0);
-    const snowAmt = smoothstep(snowLine.sub(40.0), snowLine.add(40.0), h).mul(smoothstep(0.75, 0.45, slope));
-    ground.assign(mix(ground, palette.snow, snowAmt));
+    const { xz, downhill, edge, steep, alpine, terminator, glowAmt, cold, basin, gate } = snow;
+    snowAmount.assign(0.0);
+    const tongue = float(0).toVar(),
+      ledge = float(0).toVar(),
+      rib = float(0).toVar(),
+      band = float(0).toVar(),
+      crevasse = float(0).toVar(),
+      grain = float(1).toVar();
+    If(gate, () => {
+      // Flutes: stripes down the fall line from six fixed stripe directions,
+      // blended by how well each matches the face's own downhill direction. A
+      // stripe field that rotated with the normal would marble, since world
+      // coordinates are kilometres long. In patches, broken by rock.
+      let fluteSum = float(0),
+        weightSum = float(0);
+      for (let i = 0; i < 6; i++) {
+        const a = (i * Math.PI) / 6;
+        const dir = vec2(Math.cos(a), Math.sin(a)),
+          perp = vec2(-Math.sin(a), Math.cos(a));
+        const w = dot(downhill, dir).abs().pow(16);
+        const stripe = mx_noise_float(vec2(dot(xz, perp).mul(1 / 24), dot(xz, dir).mul(1 / 900).add(i * 7.1)));
+        fluteSum = fluteSum.add(stripe.mul(w));
+        weightSum = weightSum.add(w);
+      }
+      const patchy = smoothstep(-0.25, 0.35, mx_noise_float(xz.mul(1 / 160).add(vec2(3.1, 7.7))));
+      const flute = fluteSum.div(weightSum.add(0.0001)).mul(1.8).clamp(-1, 1).mul(patchy);
+      const above = smoothstep(-28.0, 24.0, edge);
+      const holdAmt = smoothstep(SNOW.hold + 0.16, SNOW.hold, slope.sub(flute.mul(SNOW.flute)));
+      // strata: thin level bands, faintly tilted, fading in and out over 220 m
+      ledge.assign(
+        smoothstep(0.72, 0.95, sin(h.mul(0.12).add(mx_noise_float(xz.mul(0.004)).mul(1.2)))).mul(
+          smoothstep(-0.2, 0.3, mx_noise_float(xz.mul(1 / 220))),
+        ),
+      );
+      const ledgeSnow = ledge.mul(smoothstep(150.0, 260.0, edge)).mul(steep).mul(SNOW.ledge).mul(smoothstep(0.75, 0.45, slope));
+      const crest = smoothstep(-3.0, -12.0, lapBroad).mul(smoothstep(0.7, 0.35, slope));
+      rib.assign(steep.mul(smoothstep(0.1, -0.4, flute)));
+      // Ice: blue-white seracs hanging in the deep hollows just under the
+      // snow, in cold country only, with broken crevasse lines along the
+      // contour; the ice shows below the snow and through it where the
+      // drifts thin.
+      tongue.assign(basin.mul(cold).mul(smoothstep(-SNOW.iceReach, -30.0, edge)).mul(smoothstep(0.5, 0.25, slope)));
+      crevasse.assign(
+        smoothstep(0.75, 0.95, sin(edge.mul(0.45).add(mx_noise_float(xz.mul(0.03)).mul(4.0)))).mul(
+          smoothstep(0.0, 0.3, mx_noise_float(xz.mul(0.06))),
+        ),
+      );
+      snowAmount.assign(above.mul(holdAmt.max(ledgeSnow).max(crest)).mul(float(1).sub(tongue.mul(0.65))));
+      // an ochre band across the upper faces, in patches
+      const patch = smoothstep(0.1, 0.5, mx_noise_float(xz.mul(0.006)));
+      band.assign(smoothstep(75.0, 100.0, edge).mul(smoothstep(170.0, 145.0, edge)).mul(patch).mul(SNOW.band).mul(alpine));
+      // wind streaks and drift undulation of a few percent
+      const streak = mx_noise_float(vec2(dot(xz, WIND).mul(0.05), dot(xz, WIND_PERP).mul(0.5)));
+      const drift = mx_noise_float(xz.mul(0.035));
+      grain.assign(streak.mul(0.035).add(drift.mul(0.05)).add(1.0));
+    });
+    const ice = mix(SNOW.iceShade, SNOW.iceLit, terminator).mul(float(1).sub(crevasse.mul(0.35)));
+    // Alpine rock: dark, warmer toward the sun, in a band under the snow line
+    // and taking over sooner on steep faces there; the ochre band; strata
+    // shadows; darker ribs between the flutes.
+    let alpineRock = mix(rock, mix(SNOW.rock, SNOW.rock.mul(vec3(1.18, 1.08, 0.94)), terminator), alpine.mul(0.92));
+    alpineRock = mix(alpineRock, SNOW.ochre, band)
+      .mul(float(1).sub(ledge.mul(alpine).mul(0.12)))
+      .mul(float(1).sub(rib.mul(SNOW.rib)));
+    const rockAmt = smoothstep(mix(0.32, 0.22, alpine), mix(0.55, 0.44, alpine), slope);
+    ground.assign(mix(ground, alpineRock, rockAmt));
+    // The snow: warm white toward the sun, sky blue in its own shade, with the
+    // streaks and drifts, and alpenglow from the horizon band while the sun
+    // sits low, rock included.
+    const shade = mix(SNOW.shade, SNOW.shadeLow, uLowSun);
+    let snowColor = mix(shade, palette.snow, terminator).mul(grain);
+    snowColor = mix(snowColor, uGlow, glowAmt);
+    ground.assign(mix(ground, uGlow, glowAmt.mul(alpine).mul(SNOW.rockGlow)));
+    ground.assign(mix(ground, ice, tongue));
+    ground.assign(mix(ground, snowColor, snowAmount));
     return stylize(ground);
   })();
   const brush = mx_noise_float(positionWorld.xz.mul(0.018))
@@ -941,9 +1113,16 @@ let terrainMat;
     .add(mx_noise_float(positionWorld.xz.mul(0.13)).mul(0.015))
     .add(1);
   // Shore masks use the actual fragment height, never interpolated corner colors.
-  terrainMat = litMaterial(
-    mix(palette.sand, colorNode, smoothstep(1.5, 7.5, positionWorld.y)).mul(brush),
-  );
+  terrainMat = litMaterial(mix(palette.sand, colorNode, smoothstep(1.5, 7.5, positionWorld.y)).mul(brush), {
+    // Shaded snow is lit by the whole sky: a lift in the shade's own color, so
+    // a face away from the sun still reads as snow, not rock.
+    emissiveNode: stylize(mix(SNOW.shade, SNOW.shadeLow, uLowSun))
+      .mul(mix(uUpper, uGlow, uLowSun.mul(0.5)))
+      .mul(snowAmount)
+      .mul(float(1).sub(uNight.mul(0.85)))
+      .mul(float(1).sub(uLowSun.mul(0.5)))
+      .mul(SNOW.skyLift),
+  });
   terrainMat.positionNode = vec3(positionLocal.x, hv, positionLocal.z);
   terrainMat.normalNode = transformNormalToView(varying(surfaceNormal).normalize());
 }
@@ -1604,7 +1783,9 @@ function placeTrees(bx, bz) {
             });
         }
       }
-      const treeline = 470 + temp * 260;
+      // the tree line follows the snow line: trees thin out over the last
+      // 120 m below it and the first 60 m into the lowest snow
+      const treeline = snowLineAt(temp, h0) + 60;
       const grove = 2 + 4 * sstep(-0.25, 0.3, perlin2(ccx / 370, ccz / 370, seed ^ 0xc071));
       // This density cap keeps the entire ring inside its fixed allocation.
       const count = Math.min(
@@ -2021,6 +2202,80 @@ function updateClouds(bx, bz, t) {
   clouds.instanceMatrix.needsUpdate = true;
 }
 // cloud sea: a heaped plane just under the deck, holes from noise, seen only from above
+// Spindrift off the high summits: every summit in the heightfield window
+// above PLUME.min (its own local maxima, rescanned every two seconds) carries
+// one soft ribbon streaming along the world wind, turned toward the camera
+// around the wind, colored by the day's cloud light, its body two scrolling
+// noises, dense at the summit and breaking into wisps downwind. Eight at most,
+// one draw call.
+const PLUME = { min: DECK_Y + 180, max: 8, length: 650, rise: 60, width: 180 };
+const plumeGeo = new THREE.PlaneGeometry(1, 2, 32, 1); // x along the wind, y across
+const plumeMat = new MeshBasicNodeMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide });
+{
+  const wind = vec3(WIND.x, 0, WIND.y),
+    windPerp = vec3(WIND_PERP.x, 0, WIND_PERP.y);
+  const base = attribute('base', 'vec3');
+  // the ribbon coordinates come from the immutable geometry attribute, never
+  // from positionLocal, which this material has already moved to the summit
+  const ribbon = attribute('position', 'vec3');
+  const uV = ribbon.x.add(0.5),
+    vV = ribbon.y;
+  const toCam = normalize(cameraPosition.sub(base));
+  const side = normalize(cross(wind, toCam).add(windPerp.mul(0.12)));
+  const width = uV.pow(0.6).mul(0.85).add(0.15).mul(PLUME.width);
+  const lift = uV.mul(PLUME.rise).add(sin(uV.mul(7.0).add(time.mul(0.9))).mul(uV.mul(16.0)));
+  plumeMat.positionNode = base.add(wind.mul(uV.mul(PLUME.length))).add(vec3(0, 1, 0).mul(lift)).add(side.mul(vV.mul(width)));
+  const u = varying(uV),
+    v = varying(vV),
+    idx = varying(instanceIndex.toFloat());
+  // cloud white at the summit, taking the shade's blue as it thins downwind
+  plumeMat.colorNode = mix(uCloudWhite, mix(uHorizon, SNOW.shade, 0.5), u.mul(0.6));
+  const body = mx_noise_float(vec3(u.mul(6.0).sub(time.mul(0.45)), v.mul(2.2).add(idx.mul(3.7)), time.mul(0.1)))
+    .mul(2.0)
+    .add(mx_noise_float(vec3(u.mul(14.0).sub(time.mul(0.8)), v.mul(5.0), idx)));
+  const thinning = float(1).sub(smoothstep(0.3, 1.0, u));
+  plumeMat.opacityNode = smoothstep(float(-0.6).sub(thinning.mul(0.5)), 0.5, body)
+    .mul(smoothstep(0.0, 0.06, u))
+    .mul(thinning.pow(1.3))
+    .mul(float(1).sub(v.mul(v)).pow(0.6))
+    .mul(0.95)
+    .mul(float(1).sub(uNight.mul(0.5)));
+}
+const plumes = new THREE.InstancedMesh(plumeGeo, plumeMat, PLUME.max);
+plumes.geometry.setAttribute('base', new THREE.InstancedBufferAttribute(new Float32Array(PLUME.max * 3), 3));
+plumes.frustumCulled = false;
+plumes.renderOrder = 3;
+plumes.count = 0;
+scene.add(plumes);
+let plumeScanAt = -1e9;
+function updatePlumes(t) {
+  // every two seconds of simulation time, and at once when the clock is set back
+  if (t >= plumeScanAt && t - plumeScanAt < 2) return;
+  plumeScanAt = t;
+  const found = [];
+  for (let iz = hfCz - N / 2 + 8; iz < hfCz + N / 2 - 8; iz++)
+    for (let ix = hfCx - N / 2 + 8; ix < hfCx + N / 2 - 8; ix++) {
+      const h = texel(ix, iz, 0);
+      if (h < PLUME.min) continue;
+      let top = true;
+      for (let dz = -8; dz <= 8 && top; dz++)
+        for (let dx = -8; dx <= 8; dx++)
+          if ((dx || dz) && texel(ix + dx, iz + dz, 0) >= h) {
+            top = false;
+            break;
+          }
+      if (top) found.push({ x: ix * CELL, z: iz * CELL, h });
+    }
+  found.sort((a, b) => b.h - a.h);
+  const attr = plumes.geometry.attributes.base;
+  let n = 0;
+  for (const s of found) {
+    if (n >= PLUME.max) break;
+    attr.setXYZ(n++, s.x, s.h + 4, s.z);
+  }
+  attr.needsUpdate = true;
+  plumes.count = n;
+}
 let seaMat;
 {
   // The cloud surface is atmosphere, not land inside its own height fog.
@@ -2432,6 +2687,23 @@ function terrainAhead(dist) {
   }
   return h;
 }
+// The range's pyramids rise faster than the bird can climb, so the flight
+// looks further ahead than its clearance does: the altitude it needs now to
+// clear every point of the next two kilometres, along the arc of the current
+// turn, at four fifths of its own climb rate.
+function climbAhead(dist) {
+  let need = -1e9,
+    px = state.x,
+    pz = state.z;
+  const step = 60;
+  for (let d = step; d <= dist; d += step) {
+    const heading = state.heading + (state.yawRate * d) / SPEED;
+    px += Math.sin(heading) * step;
+    pz += Math.cos(heading) * step;
+    need = Math.max(need, heightAt(px, pz) + 40 - (d / SPEED) * CLIMB * 0.8);
+  }
+  return need;
+}
 let cloudSchedule = 0; // 0 = below the deck, 1 = above it
 // The schedule climbs through the deck for the last hundred seconds of every
 // three hundred, counted from this origin; the opening resets it so a full
@@ -2593,27 +2865,28 @@ function updateFlight(dt) {
   const wantLow = flight.low && gentle ? 1 : 0;
   flight.lowAmount += (wantLow - flight.lowAmount) * Math.min(1, dt * (wantLow ? 0.16 : 0.35));
   const low = flight.lowAmount;
-  const ahead = terrainAhead(520);
+  const ahead = terrainAhead(520),
+    wall = climbAhead(2200);
   const cruise = Math.max(
     ahead + 110 - 80 * low + 40 * (1 - 0.6 * low) * n1(state.t * 0.03, S1 + 4),
     SEA_LEVEL + 55 - 32 * low,
   );
   const high = DECK_Y + 190 + 30 * n1(state.t * 0.05, S1 + 8);
   let target = cruise + (high - Math.min(cruise, high)) * cloudSchedule + state.nudgeAlt;
-  target = Math.max(target, ahead + 18, heightAt(state.x, state.z) + 28);
+  target = Math.max(target, ahead + 18, heightAt(state.x, state.z) + 28, wall);
   // A low pass follows the ground more eagerly: the gap the bird settles
   // into over falling ground is the ground's descent rate over this gain.
-  let vyTarget = Math.max(-16, Math.min(11, (target - state.y) * (0.12 + 0.2 * low)));
+  let vyTarget = Math.max(-16, Math.min(CLIMB, (target - state.y) * (0.12 + 0.2 * low)));
   // The captain's aim overrides whatever the flight had planned: while he has
   // the stick, and for a moment after, the nose he set is the only thing that
   // moves the bird up or down, inside the same envelope, the same clearance
   // over the ground ahead, and a ceiling over the cloud sea. Then the flight
   // takes the altitude back from where he left it.
   if (state.aimHold > 0) {
-    const aimed = Math.max(-16, Math.min(11, Math.sin(state.aim) * SPEED));
+    const aimed = Math.max(-16, Math.min(CLIMB, Math.sin(state.aim) * SPEED));
     vyTarget += (aimed - vyTarget) * state.aimHold;
     vyTarget = Math.min(vyTarget, (AIM.ceiling - state.y) * AIM.brake);
-    vyTarget = Math.max(vyTarget, (Math.max(ahead + 18, here + 28) - state.y) * AIM.brake);
+    vyTarget = Math.max(vyTarget, (Math.max(ahead + 18, here + 28, wall) - state.y) * AIM.brake);
     if (!steering()) {
       state.aimHold = Math.max(0, state.aimHold - dt / AIM.release);
       if (state.aimHold === 0) {
@@ -2678,10 +2951,10 @@ const AIM = {
   // The ends of the stick are the ends of the bird's own envelope: a full
   // drag reaches its fastest climb or its fastest descent and no further, so
   // the nose stays well short of anything like a loop and no travel is dead.
-  up: Math.asin(11 / SPEED),
+  up: Math.asin(CLIMB / SPEED),
   down: Math.asin(16 / SPEED),
   release: 2.2, // seconds over which the flight takes the altitude back
-  ceiling: DECK_Y + 420, // where a steered climb eases off, well over the deck
+  ceiling: DECK_Y + 620, // where a steered climb eases off, over the deck and the tallest summit
   brake: 0.35, // how firmly the ground ahead and the ceiling take the aim back
 };
 function aimBy(delta) {
@@ -3530,6 +3803,7 @@ function advance(dt, sound = true) {
   updateTitle();
   time.value = state.t;
   updateHeightfield(state.x, state.z);
+  updatePlumes(state.t);
   uOrigin.value.set(Math.round(state.x / CELL) * CELL, Math.round(state.z / CELL) * CELL);
   terrain.position.set(uOrigin.value.x, 0, uOrigin.value.y);
   uWaterOrigin.value.set(
@@ -3879,7 +4153,12 @@ window.__fly = {
     return dayRate;
   },
   biomeAt,
+  snowLineAt: (x, z) => snowLineAt(fieldAt(x, z, 1), heightAt(x, z)),
   terrainAhead,
+  climbAhead,
+  get plumes() {
+    return { count: plumes.count, summits: Array.from(plumes.geometry.attributes.base.array.slice(0, plumes.count * 3)) };
+  },
   treeCell: TREE_CELL,
   trees: treeRecords,
   sites: ruinRecords,

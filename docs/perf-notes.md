@@ -114,6 +114,68 @@ covering the screen. And hiding the water made the frame **0.52 ms slower**,
 because water is a cheap opaque surface standing in front of expensive ones;
 it is not a target, it is a saving.
 
+## The snow and the range
+
+The Himalayan snow (`tests/snow-review.md`) put fourteen `mx_noise_float` taps
+into the terrain's fragment shader: six flute stripes, their patches, two for
+the strata, two for the crevasses, one for the ochre band, and the streak and
+drift of the snow's grain. Measured with the renderer's own timestamps at the
+world start's noon vantage of seed 42, 1280 by 720 at one device pixel, vsync
+off, the median GPU frame and the same frame with the terrain hidden, so the
+difference is what the terrain costs:
+
+| build | GPU frame | terrain hidden | the terrain |
+| --- | --- | --- | --- |
+| main (`3fe3833`) | 4.59 ms | 4.33 ms | 0.26 ms |
+| the snow, every tap everywhere | 7.60 ms | 4.33 ms | 3.27 ms |
+| the snow behind its branch | 5.31 ms | 4.65 ms | 0.66 ms |
+
+Two things were tried on the ungated build first and measured at nothing:
+`.toVar()` on the shared snow terms (7.54 ms, so the emissive was not evaluating
+them twice) and the emissive removed (7.67 ms). Cutting the flute loop from six
+taps to one gave 6.88 ms, which puts a noise tap at about 0.14 ms a frame over
+this much terrain, so the cost is the taps themselves, spread evenly, and no one
+term was the target. What worked was not paying them where they cannot show:
+the line's wobble moved to a vertex varying, which makes the line arithmetic in
+the fragment stage, and everything else runs inside one `If` on that line, near
+or above it, in a deep hollow just under it (the ice), or on a steep face in
+the rock band (the flutes' ribs, the strata, the ochre). A lowland frame, which
+is most of a flight, then pays the branch and nothing behind it. The branch is
+coherent because the snow country is; a per-pixel dynamic branch on scattered
+conditions would not have saved this. Four snow vantages screenshotted before
+and after the gate differ by 0.03 to 0.24 levels mean, under one percent of
+pixels by more than four, the ribs on steep lowland rock more than 320 m under
+the line being the one deliberate loss.
+
+`tools/bench.js` at its five vantages, main against the branch, same machine
+and settings:
+
+| vantage | main GPU mean, p05 | branch GPU mean, p05 | change | draw calls |
+| --- | --- | --- | --- | --- |
+| dawn | 5.33, 4.33 ms | 5.72, 4.92 ms | +0.39 ms | 68 to 72 |
+| noon | 5.05, 4.26 ms | 5.72, 4.85 ms | +0.67 ms | 68 to 72 |
+| far | 4.26, 3.28 ms | 5.12, 4.00 ms | +0.86 ms | 57 |
+| above the deck | 6.12, 5.05 ms | 6.41, 5.51 ms | +0.29 ms | 70 to 74 |
+| night | 6.05, 5.24 ms | 6.60, 5.70 ms | +0.55 ms | 69 to 73 |
+| **all five** | **5.4, 4.4 ms** | **5.9, 5.0 ms** | **+0.5 ms** | |
+
+Read: half a millisecond a frame on average, nine percent, most of it where the
+range stands in view (the far vantage looks along it), and the GPU busy share
+71% to 75% of the second. The main thread is unchanged at 94% busy, the frame
+at the quiet fifth percentile 4.8 to 4.9 ms. Draw calls rise by four with the
+plumes. Run to run, main itself moved by a millisecond between
+this session and the one before it, so only the pair measured together counts;
+the ungated build in that earlier session was 10.2 ms mean against main's 6.3,
+which is what the branch above was for.
+
+The range itself costs on the CPU, not the GPU: `pyramidPeaks` evaluates up to
+nine candidate pyramids per heightfield cell, three or four planes each, on top
+of the four-octave ridged massif, so a full window fill is heavier than it was.
+It happens on a hop or a resume, never per frame, and it does not show: a 6 km
+hop with its whole step (the fill, the trees, the props) took 235 to 313 ms on
+main and 221 to 285 ms on the branch, six hops each, seed 42, in the same
+browser.
+
 ## What is left, and what it would cost
 
 Nothing here is landed. Each line says what it is worth, what it takes, and how
