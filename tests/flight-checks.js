@@ -60,6 +60,10 @@ async function flightChecks() {
     'the gate stands on the drawn world with Begin ready',
   );
   assert(!z.title.started && z.title.name === 0 && z.title.presents === 0, 'no title card before Begin');
+  assert(
+    doc.getElementById('hud').inert && z.bird === z.library.birds[0].id && z.objects.bird.userData.kindId === z.bird,
+    "before Begin the bird is the registry's first and its control is out of reach",
+  );
   assert(!z.resumed && z.volume === 0.5, 'a fresh visit starts at half volume');
   assert(
     z.intro.beat === 'side' && Math.abs(Math.abs(wrapAngle(z.state.heading - azimuth(z.sky.sun))) - Math.PI / 2) < 0.03,
@@ -205,6 +209,27 @@ async function flightChecks() {
       'a baked prop over its triangle budget is refused by name',
     );
     assert(library.validateBaked(library.props[0], boulders).length === 0, 'the boulders fit their budget');
+    // Birds are entries over the engine's bird kit, refused by name like the rest.
+    assert(
+      library.birds.length >= 2 && library.birds.every((b) => b.kind === 'bird' && typeof b.name === 'string' && b.wings.segments.length === 3),
+      'the registry carries at least two bird kinds, each with three-segment wings',
+    );
+    const firstBird = library.birds[0];
+    const keptBird = { colors: firstBird.colors, wings: firstBird.wings };
+    firstBird.colors = { ...firstBird.colors, body: 0x00ff00 };
+    firstBird.wings = { ...firstBird.wings, segments: firstBird.wings.segments.slice(0, 2) };
+    const birdErrors = library.validate();
+    Object.assign(firstBird, keptBird);
+    assert(
+      birdErrors.some((e) => e.startsWith(`bird ${firstBird.id}`) && e.includes('palette envelope')) &&
+        birdErrors.some((e) => e.startsWith(`bird ${firstBird.id}`) && e.includes('three segments')),
+      'the library refuses a neon bird and a two-segment wing, naming the bird',
+    );
+    assert(library.validate().length === 0, 'the library is whole again after the bird trial');
+    const birdBody = z.objects.bird.children.find((o) => o.isMesh).geometry;
+    const tightBird = library.validateBaked({ kind: 'bird', id: 'trial', budget: { triangles: 1 } }, birdBody);
+    assert(tightBird.length === 1 && tightBird[0].startsWith('bird trial:'), 'a baked bird over its triangle budget is refused by name');
+    assert(library.validateBaked(firstBird, birdBody).length === 0, 'the bird fits its budget');
     assert(
       Object.keys(z.objects.props).length === library.props.length && library.props.every((p) => z.objects.props[p.id]),
       'every prop kind in the registry has a pool in the world',
@@ -1030,6 +1055,54 @@ async function flightChecks() {
   assert(!win.flightFailed, 'no runtime failure');
   button('muteBtn');
   assert(doc.getElementById('muteBtn').textContent === 'sound off' && z.muted, 'sound can be turned off again');
+
+  // The bird: the corner control cycles the kinds in the registry, every bird on
+  // the page becomes that kind where it is, a legged kind keeps its legs off the
+  // ground, a kind may move where the camera looks but not where it hangs, and
+  // the page remembers the choice.
+  {
+    const birds = z.library.birds,
+      birdButton = doc.getElementById('birdBtn');
+    assert(!doc.getElementById('hud').inert && birdButton.textContent.includes(birds[0].name), 'after Begin the bird control is in reach and names the first kind');
+    const before = z.objects.bird.position.clone();
+    birdButton.click();
+    assert(
+      z.bird === birds[1].id && z.objects.bird.userData.kindId === birds[1].id && birdButton.textContent.includes(birds[1].name),
+      'the corner control flies the next kind and names it',
+    );
+    assert(z.objects.companions.every((b) => b.userData.kindId === birds[1].id), "the flock is the bird's own kind");
+    assert(z.objects.bird.position.distanceTo(before) < 0.000001, 'changing the bird leaves it where it was');
+    const pivot = z.objects.bird.userData.wings[0].pivots[0],
+      hinge = pivot.rotation.z;
+    z.state.flapBurst = 5;
+    z.step(0.05);
+    assert(pivot.rotation.z !== hinge, 'the new kind beats its wings');
+    for (let i = 1; i < birds.length; i++) birdButton.click();
+    assert(z.bird === birds[0].id, 'the control cycles through every kind and back to the first');
+    const legged = birds.find((b) => b.below > 0);
+    if (legged) {
+      z.setBird(legged.id);
+      const hang = legged.below * (legged.scale ?? 1);
+      z.state.y = z.heightAt(z.state.x, z.state.z) - 20;
+      z.step(1 / 60);
+      assert(
+        z.state.y - z.obstacleFloor(z.state.x, z.state.z) >= 8 + hang - 0.000001,
+        'a kind with legs flies its floor higher by what hangs below it',
+      );
+    }
+    const looker = birds.find((b) => b.look?.ahead);
+    if (looker) {
+      z.setBird(looker.id);
+      z.step(1 / 60);
+      const eye = z.camera.position,
+        at = z.objects.bird.position;
+      assert(
+        Math.abs(Math.hypot(eye.x - at.x, eye.z - at.z) - Math.cos(z.cam.pitch) * z.cam.dist) < 0.01,
+        'a kind that looks ahead keeps the camera hung on the bird',
+      );
+    }
+    z.setBird(birds[1].id);
+  }
   const performance = { ...z.renderer.info.render, ...z.perf };
   const left = {
     seed: z.seed,
@@ -1040,6 +1113,7 @@ async function flightChecks() {
     t: z.state.t,
     dayPhase: z.dayPhase,
     cam: { yaw: z.cam.yaw, pitch: z.cam.pitch, dist: z.cam.dist },
+    bird: z.bird,
   };
   const disposal = z.dispose();
   await disposal;
@@ -1078,6 +1152,13 @@ async function flightChecks() {
     ['yaw', 'pitch', 'dist'].every((k) => again.z.cam[k] === left.cam[k]),
     "the viewer's framing is remembered",
   );
+  assert(
+    again.z.bird === left.bird &&
+      left.bird === again.z.library.birds[1].id &&
+      again.z.objects.bird.userData.kindId === left.bird &&
+      again.doc.getElementById('birdBtn').textContent.includes(again.z.library.birds[1].name),
+    'the bird is remembered',
+  );
   assert(!again.z.running && again.z.audioState === 'not-created', 'a remembered flight still waits for Begin');
   assert(
     again.doc.getElementById('begin').classList.contains('ready') && !again.doc.getElementById('beginBtn').disabled,
@@ -1102,7 +1183,7 @@ async function flightChecks() {
     new URL(fresh.win.location.href).searchParams.get('seed') === String((left.seed + 1) >>> 0),
     'an explicit seed stays in the address as given',
   );
-  assert(fresh.z.volume === 0.4 && fresh.z.muted, 'settings carry over to another world');
+  assert(fresh.z.volume === 0.4 && fresh.z.muted && fresh.z.bird === left.bird, 'settings carry over to another world, the bird included');
   assert(fresh.z.intro.beat === 'side', 'another world opens with the opening again');
   await closeWorld(fresh);
   localStorage.clear();

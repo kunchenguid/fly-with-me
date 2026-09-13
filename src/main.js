@@ -3,6 +3,7 @@
 // says stands here, a bird, a camera and a day. The page (index.html) holds
 // the markup and the import map; the library (library/) holds every place.
 import * as THREE from 'three';
+import { buildBird, animateBird } from './birds.js';
 import {
   WebGPURenderer,
   MeshStandardNodeMaterial,
@@ -266,7 +267,6 @@ const L = {
     waterShallow: 0x74b9a9,
   },
   cloud: { white: 0xe1e4cb },
-  bird: { body: 0xdad9bc, wing: 0x566e73, tip: 0x566e73 },
 };
 applyLook(L);
 const FOG_DENSITY = L.fogDensity;
@@ -282,7 +282,9 @@ const FOG_DENSITY = L.fogDensity;
 const BIOMES = registry.biomes,
   SPECIES = Object.fromEntries(registry.species.map((entry) => [entry.id, entry])),
   RUINS = registry.ruins,
-  PROPS = registry.props;
+  PROPS = registry.props,
+  BIRDS = registry.birds,
+  BIRD = Object.fromEntries(BIRDS.map((entry) => [entry.id, entry]));
 {
   const errors = validateLibrary(registry);
   if (errors.length) throw new Error('scenery library: ' + errors.join('; '));
@@ -2074,85 +2076,48 @@ cloudSea.renderOrder = 2;
 scene.add(cloudSea);
 
 // ---------------------------------------------------------------------------
-// Feathered wings articulate on three pivots with a traveling wave.
+// Birds. Every kind in library/birds/ is data over the bird kit in
+// src/birds.js: a body and two wings of three hinged segments with painted
+// primaries, and a flight profile the hinges follow. The engine makes the
+// meshes, lights them with its own soft material, measures each kind against
+// its budget by name, keeps the flock the bird's own kind, and drives the
+// hinges. The viewer picks a kind in the corner, never before Begin, and the
+// page remembers it with the other settings; the registry's first is the
+// default.
 // ---------------------------------------------------------------------------
 const birdMaterial = propMaterial({ basic: { side: THREE.DoubleSide } });
-function makeBird(bodyColor = L.bird.body, wingColor = L.bird.wing, tipColor = L.bird.tip) {
-  const g = new THREE.Group();
-  const mat = birdMaterial;
-  const body = mergeParts([
-    {
-      geometry: new THREE.SphereGeometry(0.45, 16, 10),
-      matrix: M(0, 0, 0, 1.0, 0.85, 2.3),
-      color: bodyColor,
-    },
-    {
-      geometry: new THREE.SphereGeometry(0.24, 12, 8),
-      matrix: M(0, 0.22, 1.05, 1, 0.95, 1.15),
-      color: bodyColor,
-    },
-    {
-      geometry: new THREE.ConeGeometry(0.09, 0.42, 4),
-      matrix: M(0, 0.18, 1.42, 1, 1, 1, Math.PI / 2, 0, 0),
-      color: 0xbda66a,
-    },
-    ...Array.from({ length: 5 }, (_, i) => ({
-      geometry: new THREE.SphereGeometry(1, 8, 5),
-      matrix: M((i - 2) * 0.12, -0.03, -1.15, 0.12, 0.025, 0.6, 0, (i - 2) * 0.06, 0),
-      color: tipColor,
-    })),
-  ]);
-  g.add(new THREE.Mesh(body, mat));
+const birdKit = { THREE, merge: mergeParts, M };
+let birdKindId = BIRD[storedSettings.bird] ? storedSettings.bird : BIRDS[0].id;
+const birdsMeasured = new Set();
+function dressBird(g, kindId, size = 1) {
+  for (const child of [...g.children]) {
+    g.remove(child);
+    child.traverse((o) => o.isMesh && o.geometry.dispose());
+  }
+  const kind = BIRD[kindId];
+  const built = buildBird(kind, birdKit);
+  if (!birdsMeasured.has(kindId)) {
+    // one kind is one budget: body and wings together, judged by entry name
+    const whole = mergeParts([{ geometry: built.body }, ...built.wings.flatMap((w) => w.segments.map((seg) => ({ geometry: seg.geometry })))]);
+    const errors = validateBaked(kind, whole);
+    whole.dispose();
+    if (errors.length) throw new Error('scenery library: ' + errors.join('; '));
+    birdsMeasured.add(kindId);
+  }
+  g.add(new THREE.Mesh(built.body, birdMaterial));
   const wings = [];
-  for (const s of [-1, 1]) {
-    const lens = [1.3, 1.3, 1.1],
-      chords = [0.65, 0.6, 0.35],
-      cols = [wingColor, wingColor, tipColor];
-    let parent = g,
-      px = s * 0.32;
+  for (const wing of built.wings) {
+    let parent = g;
     const pivots = [];
-    for (let i = 0; i < 3; i++) {
+    for (const seg of wing.segments) {
       const pivot = new THREE.Group();
-      pivot.position.set(px, i === 0 ? 0.12 : 0, i === 0 ? 0.08 : 0);
-      const shape = new THREE.Shape();
-      shape.moveTo(0, chords[i]);
-      shape.quadraticCurveTo(
-        s * lens[i] * 0.6,
-        chords[i] * 0.95,
-        s * lens[i],
-        i === 2 ? -0.35 : chords[i + 1],
-      );
-      shape.lineTo(s * lens[i], -0.65);
-      shape.lineTo(0, -0.65);
-      shape.closePath();
-      const membrane = new THREE.ShapeGeometry(shape, 12);
-      membrane.rotateX(Math.PI / 2);
-      const parts = [{ geometry: membrane, color: cols[i] }];
-      if (i > 0)
-        for (let j = 0; j < 5; j++)
-          parts.push({
-            geometry: new THREE.SphereGeometry(1, 8, 5),
-            matrix: M(
-              s * (0.16 + j * 0.21),
-              -0.01,
-              -0.57,
-              0.16,
-              0.025,
-              0.55 - i * 0.08 - j * 0.025,
-              0,
-              s * (-0.2 - j * 0.05),
-              0,
-            ),
-            color: tipColor,
-          });
-      const segGeo = mergeParts(parts);
-      pivot.add(new THREE.Mesh(segGeo, mat));
+      pivot.position.set(...seg.at);
+      pivot.add(new THREE.Mesh(seg.geometry, birdMaterial));
       parent.add(pivot);
       pivots.push(pivot);
       parent = pivot;
-      px = s * lens[i];
     }
-    wings.push({ s, pivots });
+    wings.push({ s: wing.s, pivots });
   }
   g.traverse((o) => {
     if (o.isMesh) {
@@ -2160,39 +2125,47 @@ function makeBird(bodyColor = L.bird.body, wingColor = L.bird.wing, tipColor = L
       o.receiveShadow = true;
     }
   });
+  g.scale.setScalar((kind.scale ?? 1) * size);
+  g.userData.kind = kind;
+  g.userData.kindId = kindId;
   g.userData.wings = wings;
   g.userData.phase = Math.random() * 6.28;
   g.userData.flapAmp = 0.1;
+  return g;
+}
+function makeBird(kindId, size = 1) {
+  const g = new THREE.Group();
+  dressBird(g, kindId, size);
   g.rotation.order = 'YXZ';
   return g;
 }
-function animateWings(bird, dt, flapping, speedMul = 1) {
-  const u = bird.userData;
-  const targetAmp = flapping ? 0.48 : 0.09;
-  u.flapAmp += (targetAmp - u.flapAmp) * Math.min(1, dt * 3.0);
-  u.phase += dt * (flapping ? 6.5 : 1.4) * speedMul;
-  const rest = [0.14, -0.08, -0.05],
-    seg = [1.0, 0.55, 0.45],
-    lag = [0, 0.9, 1.6];
-  for (const w of u.wings) {
-    for (let i = 0; i < 3; i++) {
-      const a = Math.sin(u.phase - lag[i]) * u.flapAmp * seg[i] + rest[i] * (1 - u.flapAmp * 0.5);
-      w.pivots[i].rotation.z = -w.s * a;
-    }
-  }
-}
-const bird = makeBird();
-bird.scale.setScalar(1);
+const animateWings = animateBird;
+const bird = makeBird(birdKindId);
 scene.add(bird);
+// how far the kind hangs under its center, in world meters: legs, a long tail
+const birdBelow = () => (bird.userData.kind.below ?? 0) * bird.scale.y;
 
-// companions for the flock moments
+// companions for the flock moments, always the bird's own kind
 const companions = [];
 for (let i = 0; i < 5; i++) {
-  const b = makeBird();
-  b.scale.setScalar(0.8);
+  const b = makeBird(birdKindId, BIRD[birdKindId].flock.scale);
   b.visible = false;
   scene.add(b);
   companions.push(b);
+}
+// The viewer's choice: every bird on the page becomes the kind, the page
+// remembers it, and a paused or waiting page shows it at once.
+function setBirdKind(kindId) {
+  if (!BIRD[kindId]) throw new Error('unknown bird: ' + kindId);
+  birdKindId = kindId;
+  dressBird(bird, kindId);
+  for (const b of companions) dressBird(b, kindId, BIRD[kindId].flock.scale);
+  showBird();
+  saveSettings();
+  if (!running || paused) {
+    last = performance.now();
+    renderer.setAnimationLoop(frame);
+  }
 }
 const formation = [
   [-9, -1, -7],
@@ -2648,7 +2621,7 @@ function updateFlight(dt) {
   state.x += fx * SPEED * dt;
   state.z += fz * SPEED * dt;
   state.y += state.vy * dt;
-  state.y = Math.max(state.y, obstacleFloor(state.x, state.z) + 8);
+  state.y = Math.max(state.y, obstacleFloor(state.x, state.z) + 8 + birdBelow());
   // pose: roll leads yaw, pitch follows climb
   const bankTarget = -(state.yawRate + steerRate) * 1.35;
   state.bank += (bankTarget - state.bank) * Math.min(1, dt * 2.2);
@@ -2674,7 +2647,7 @@ function updateFlight(dt) {
     state.nudgeAlt *= Math.exp(-dt / 3.5);
   }
 
-  bird.position.set(state.x, state.y + Math.sin(state.t * 3.1) * 0.06, state.z);
+  bird.position.set(state.x, state.y + Math.sin(state.t * 3.1) * (bird.userData.kind.flight.bob ?? 0.06), state.z);
   bird.rotation.set(-state.pitch, state.heading, state.bank);
   animateWings(bird, dt, state.flapping);
 }
@@ -2826,7 +2799,15 @@ function updateCamera(dt) {
   cam.lift += (lift - cam.lift) * Math.min(1, dt * (lift > cam.lift ? 10 : 1.5));
   want.y = Math.max(want.y + cam.lift, floor + 7);
   camera.position.copy(want);
-  camera.lookAt(state.x, state.y + CAMERA.lookRise, state.z);
+  // A kind may move where the camera looks, so a long neck sits in frame; the
+  // camera's place, and so the orbit's pivot, stays on the bird.
+  const look = bird.userData.kind.look,
+    ahead = (look?.ahead ?? 0) * bird.scale.y;
+  camera.lookAt(
+    state.x + Math.sin(state.heading) * ahead,
+    state.y + (look?.rise ?? CAMERA.lookRise),
+    state.z + Math.cos(state.heading) * ahead,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2859,11 +2840,13 @@ function updateMoments(dt, sound = true) {
     if (!b.visible) return;
     const ease = 1 - Math.pow(1 - a, 3);
     const back = (1 - ease) * 140;
-    const wob = n1(state.t * 0.3 + i * 7.7, S3 + i) * 3;
+    const flock = bird.userData.kind.flock,
+      spread = flock.spread ?? 1;
+    const wob = n1(state.t * 0.3 + i * 7.7, S3 + i) * 3 * (flock.wobble ?? 1);
     b.position.set(
-      state.x + rx * f[0] + fx * (f[2] - back),
+      state.x + rx * f[0] * spread + fx * (f[2] * spread - back),
       state.y + f[1] - (1 - ease) * 40 + wob,
-      state.z + rz * f[0] + fz * (f[2] - back),
+      state.z + rz * f[0] * spread + fz * (f[2] * spread - back),
     );
     b.position.y = Math.max(b.position.y, obstacleFloor(b.position.x, b.position.z) + 6);
     b.rotation.set(-state.pitch * 0.8, state.heading, state.bank * 0.9);
@@ -3108,8 +3091,18 @@ function saveSettings() {
     volume: audio.volume,
     muted: audio.muted,
     camera: { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist },
+    bird: birdKindId,
   });
 }
+const birdButton = document.getElementById('birdBtn');
+function showBird() {
+  birdButton.textContent = 'bird: ' + BIRD[birdKindId].name;
+}
+showBird();
+birdButton.addEventListener('click', () => {
+  const next = BIRDS[(BIRDS.findIndex((entry) => entry.id === birdKindId) + 1) % BIRDS.length];
+  setBirdKind(next.id);
+});
 const muteButton = document.getElementById('muteBtn'),
   volumeSlider = document.getElementById('volume');
 const showMuted = (muted) => {
@@ -3753,10 +3746,16 @@ window.__fly = {
     species: SPECIES,
     ruins: RUINS,
     props: PROPS,
+    birds: BIRDS,
     validate: () => validateLibrary(registry),
     validateBaked,
   },
   sky: { sun: _sunDir, moon: _moonDir, events: SKY_EVENTS, galaxy },
   begin: () => beginBtn.click(),
   renderStyle: 'soft',
+  birds: BIRDS.map((entry) => entry.id),
+  get bird() {
+    return birdKindId;
+  },
+  setBird: setBirdKind,
 };

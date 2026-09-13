@@ -1,5 +1,5 @@
 // The registry. To add to the world, add a file under biomes/, species/,
-// ruins/ or props/ and one line here. The order of biomes and species is
+// ruins/, props/ or birds/ and one line here. The order of biomes and species is
 // theirs to keep: it is not a priority. See CONTRIBUTING.md.
 
 import wildsong from './biomes/wildsong.js';
@@ -32,7 +32,15 @@ import monolith from './ruins/monolith.js';
 import boulders from './props/boulders.js';
 import cairns from './props/cairns.js';
 
+import gull from './birds/gull.js';
+import eagle from './birds/eagle.js';
+import swallow from './birds/swallow.js';
+import crane from './birds/crane.js';
+import owl from './birds/owl.js';
+
 export const biomes = [wildsong, elderwood, steppe, badlands, dunes, frostpines, moor, autumn, jungle, blossom];
 export const species = [oak, elder, pine, acacia, birch, palm, blossomTree, deadwood, cypress];
 export const ruins = [ring, colonnade, gate, terrace, monolith];
 export const props = [boulders, cairns];
+// The first bird is the one a new visitor flies; the corner control cycles this order.
+export const birds = [gull, eagle, swallow, crane, owl];

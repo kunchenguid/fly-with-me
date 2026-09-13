@@ -77,6 +77,9 @@ export const BUDGET = {
   propInstances: 2000, // instances of one prop kind in the streamed ring
   siteInstances: 8, // instances of one ruin type in the ring
   speciesScale: 3, // largest tree scale
+  birdTriangles: 4000, // one baked bird kind, body and wings together
+  birdSpan: 12, // widest wingspan, meters, after the kind's scale
+  birdBeat: 15, // fastest wingbeat, radians per second
 };
 
 /** A swatch name resolved to a hex color; a hex value passes through. */
@@ -142,18 +145,39 @@ export function colorProblem(value) {
  * @property {(cell: object, kit: object) => Array<{ x: number, z: number, yaw?: number, scale?: number, sink?: number, tint?: import('three').Color }>} place
  *   Called for each 96 m cell in the streamed ring with the climate there; returns where instances stand.
  * @property {{ radius: number, height: number }} [obstacle] When set, the bird and the camera keep clear of each instance.
+ *
+ * @typedef {object} Bird One kind of bird, data over the engine's bird kit; the viewer picks one in the corner.
+ * @property {string} id
+ * @property {string} name What the corner control shows.
+ * @property {Record<string, SceneryColor>} colors Named colors the parts refer to; `body`, `tip` and `beak` are the fallbacks.
+ * @property {{ r: number, at: [number, number, number], scale: [number, number, number], color?: string }} body An ellipsoid.
+ * @property {{ r: number, at: [number, number, number], scale: [number, number, number], color?: string }} head
+ * @property {{ r: number, len: number, at: [number, number, number], sides?: number, tilt?: number, color?: string }} beak A cone pointing +z, tilted down by `tilt`.
+ * @property {{ from: [number, number, number], to: [number, number, number], r0: number, r1: number, arch?: number, color?: string }} [neck] A tapered tube on an arched curve.
+ * @property {Array<{ r: number, at: [number, number, number], scale: [number, number, number], color?: string }>} [marks] Ellipsoids painted over the body: a belly, a face, an eye.
+ * @property {Array<object>} tail Sets of blades: with `count` a fan spread by `x`, `yaw` and `taper` from the middle; without, one blade.
+ * @property {{ from: [number, number, number], to: [number, number, number], r: number, foot: [number, number, number], color?: string }} [legs] Two trailing struts, mirrored in x.
+ * @property {number} [below] How far the lowest part hangs under the body center, meters; joins the bird's floor over the ground.
+ * @property {{ rise: number, ahead: number }} [look] Where the camera looks, relative to the body center; the bird stays the orbit's pivot.
+ * @property {number} [scale] Whole-bird scale, 0.5..1.5.
+ * @property {{ root: [number, number, number], colors: [string, string, string], under?: string, segments: object[] }} wings
+ *   Three hinged segments per side, each `{ len, lead, leadTip, trail, trailTip, tip?, round?, bands?, primaries?, fingers?, color? }`.
+ * @property {{ amp: number, glideAmp: number, rate: number, glideRate: number, rest: number[], seg: number[], lag: number[], ease?: number, warp?: number, sweep?: number, bob?: number }} flight
+ *   The wingbeat: amplitude and rate flapping and gliding, the rest pose, per-segment weight and lag of the traveling wave.
+ * @property {{ scale: number, spread?: number, wobble?: number }} flock How companions of this kind are sized and spaced.
  */
 
 export const defineBiome = (biome) => ({ kind: 'biome', ...biome });
 export const defineSpecies = (species) => ({ kind: 'species', ...species });
 export const defineRuin = (ruin) => ({ kind: 'ruin', ...ruin });
 export const defineProp = (prop) => ({ kind: 'prop', ...prop });
+export const defineBird = (bird) => ({ kind: 'bird', ...bird });
 
 // ---------------------------------------------------------------------------
 // Validation. Static shape here; baked geometry is measured by the engine
 // with validateBaked as each entry is built. Both name the entry.
 // ---------------------------------------------------------------------------
-export function validateLibrary({ biomes, species, ruins, props }) {
+export function validateLibrary({ biomes, species, ruins, props, birds = [] }) {
   const errors = [];
   const color = (where, value) => {
     const problem = colorProblem(value);
@@ -175,6 +199,7 @@ export function validateLibrary({ biomes, species, ruins, props }) {
     propIds = idsOf(props, 'prop');
   idsOf(biomes, 'biome');
   idsOf(ruins, 'ruin');
+  idsOf(birds, 'bird');
   for (const entry of species) {
     const where = `species ${entry.id}`;
     color(`${where}.trunk.tint`, entry.trunk?.tint);
@@ -224,6 +249,37 @@ export function validateLibrary({ biomes, species, ruins, props }) {
     if ((prop.budget?.triangles ?? 0) > BUDGET.propTriangles) errors.push(`${where}: at most ${BUDGET.propTriangles} triangles`);
     if (prop.obstacle && !(prop.obstacle.radius > 0 && prop.obstacle.height >= 0)) errors.push(`${where}: obstacle needs a radius and a height`);
   }
+  if (!birds.length) errors.push('birds: the registry needs at least one bird');
+  for (const bird of birds) {
+    const where = `bird ${bird.id}`;
+    if (typeof bird.name !== 'string' || !bird.name) errors.push(`${where}: needs a name for the corner control`);
+    for (const [key, value] of Object.entries(bird.colors ?? {})) color(`${where}.colors.${key}`, value);
+    for (const key of ['body', 'tip', 'beak']) if (!(key in (bird.colors ?? {}))) errors.push(`${where}.colors: needs ${key}`);
+    if (!(bird.body?.r > 0) || !(bird.head?.r > 0) || !(bird.beak?.len > 0)) errors.push(`${where}: needs a body, a head and a beak`);
+    if (!Array.isArray(bird.tail)) errors.push(`${where}: tail must be a list of blade sets`);
+    const scale = bird.scale ?? 1;
+    if (!(scale >= 0.5) || scale > 1.5) errors.push(`${where}.scale: expected 0.5..1.5`);
+    const segments = bird.wings?.segments;
+    if (!Array.isArray(segments) || segments.length !== 3 || !Array.isArray(bird.wings.root) || bird.wings.colors?.length !== 3)
+      errors.push(`${where}: wings need a root, three segments and three colors`);
+    else {
+      const span = 2 * (bird.wings.root[0] + segments.reduce((a, s) => a + (s.len > 0 ? s.len : 0), 0)) * scale;
+      if (!(span >= 2) || span > BUDGET.birdSpan) errors.push(`${where}: ${span.toFixed(1)} m across, birds are 2..${BUDGET.birdSpan} m`);
+      segments.forEach((s, i) => {
+        if (!(s.len > 0) || !(s.lead > s.trail) || !(s.leadTip >= s.trailTip))
+          errors.push(`${where}.wings.segments[${i}]: needs a length and a leading edge ahead of the trailing edge`);
+      });
+    }
+    const f = bird.flight ?? {};
+    for (const key of ['amp', 'glideAmp']) if (!(f[key] >= 0) || f[key] > 1.2) errors.push(`${where}.flight.${key}: expected 0..1.2 radians`);
+    for (const key of ['rate', 'glideRate']) if (!(f[key] > 0) || f[key] > BUDGET.birdBeat) errors.push(`${where}.flight.${key}: expected 0..${BUDGET.birdBeat} radians per second`);
+    for (const key of ['rest', 'seg', 'lag'])
+      if (!Array.isArray(f[key]) || f[key].length !== 3 || !f[key].every(Number.isFinite)) errors.push(`${where}.flight.${key}: needs one number per segment`);
+    if (!(bird.flock?.scale >= 0.3) || bird.flock.scale > 1.2) errors.push(`${where}.flock.scale: expected 0.3..1.2`);
+    if (bird.below !== undefined) unit(`${where}.below`, bird.below, 2);
+    if (bird.look && !(Number.isFinite(bird.look.rise) && Number.isFinite(bird.look.ahead) && Math.abs(bird.look.ahead) <= 3))
+      errors.push(`${where}.look: needs a finite rise and an ahead within 3 m`);
+  }
   return errors;
 }
 
@@ -232,7 +288,7 @@ export function validateBaked(entry, geometry) {
   const errors = [];
   const where = `${entry.kind ?? 'entry'} ${entry.id}`;
   const triangles = (geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3;
-  const cap = entry.budget?.triangles ?? BUDGET.propTriangles;
+  const cap = entry.budget?.triangles ?? (entry.kind === 'bird' ? BUDGET.birdTriangles : BUDGET.propTriangles);
   if (triangles > cap) errors.push(`${where}: ${triangles} triangles, the budget is ${cap}`);
   const colors = geometry.attributes.color;
   if (colors) {
