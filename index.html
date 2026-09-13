@@ -330,14 +330,15 @@
       #hud[inert] {
         visibility: hidden;
       }
-      /* The perch: the bird chooser, a low strip above the controls line. */
+      /* The perch: the bird chooser, two strips above the controls line - the
+         kinds' shapes over the chosen kind's colors. */
       #perch {
         position: fixed;
         left: max(1rem, env(safe-area-inset-left));
         bottom: calc(max(0.7rem, env(safe-area-inset-bottom)) + 3.55rem);
         max-width: min(760px, calc(100% - max(1rem, env(safe-area-inset-left)) - max(1rem, env(safe-area-inset-right))));
         box-sizing: border-box;
-        padding: 0.5rem 0.6rem 0.4rem;
+        padding: 0.5rem 0.6rem 0.45rem;
         border-radius: 22px;
         border: 1px solid rgba(241, 236, 227, 0.42);
         background: rgba(14, 26, 34, 0.34);
@@ -364,33 +365,14 @@
           opacity 0.4s ease,
           transform 0.4s ease;
       }
-      #perchStrip {
-        display: flex;
-        gap: 0.55rem;
-        align-items: stretch;
-        overflow-x: auto;
-        scroll-snap-type: x proximity;
-        scrollbar-width: none;
-        padding: 0.65rem 0.2rem 0.1rem;
-      }
-      #perchStrip::-webkit-scrollbar {
-        display: none;
-      }
-      .perchGroup {
-        position: relative;
-        display: flex;
-        gap: 0.15rem;
-        align-items: flex-end;
-        padding-left: 0.5rem;
-        border-left: 1px solid rgba(241, 236, 227, 0.18);
-      }
-      .perchGroup:first-child {
-        border-left: 0;
+      .perchRow + .perchRow {
+        margin-top: 0.4rem;
+        padding-top: 0.35rem;
+        border-top: 1px solid rgba(241, 236, 227, 0.18);
       }
       .perchLabel {
-        position: absolute;
-        top: -0.62rem;
-        left: 0.55rem;
+        display: block;
+        margin: 0 0 0.1rem 0.35rem;
         font-size: 0.56rem;
         letter-spacing: 0.24em;
         text-transform: lowercase;
@@ -398,11 +380,53 @@
         pointer-events: none;
         white-space: nowrap;
       }
+      /* An overflowing strip fades at the end it can still be scrolled toward,
+         so what is out of sight reads as more birds rather than an edge. */
+      .perchStrip {
+        --fadeStart: #000;
+        --fadeEnd: #000;
+        display: flex;
+        gap: 0.3rem;
+        align-items: flex-end;
+        overflow-x: auto;
+        overscroll-behavior-x: contain;
+        scroll-snap-type: x proximity;
+        scrollbar-width: none;
+        padding: 0.1rem 0.2rem 0.15rem;
+        mask-image: linear-gradient(to right, var(--fadeStart), #000 26px, #000 calc(100% - 26px), var(--fadeEnd));
+        -webkit-mask-image: linear-gradient(to right, var(--fadeStart), #000 26px, #000 calc(100% - 26px), var(--fadeEnd));
+      }
+      .perchStrip[data-overflow~='start'] {
+        --fadeStart: transparent;
+      }
+      .perchStrip[data-overflow~='end'] {
+        --fadeEnd: transparent;
+      }
+      .perchStrip::-webkit-scrollbar {
+        display: none;
+      }
+      /* The rail: a strip's own slim bar, shown only while it overflows. A
+         platform scrollbar would not do - macOS hides its overlay until a
+         scroll is already under way, which is the thing that needs telling. */
+      .perchRail {
+        height: 3px;
+        margin: 0.1rem 0.35rem 0;
+        border-radius: 2px;
+        background: rgba(241, 236, 227, 0.16);
+        opacity: 0;
+        transition: opacity 0.25s ease;
+      }
+      .perchRail.on {
+        opacity: 1;
+      }
+      .perchRail div {
+        height: 100%;
+        border-radius: 2px;
+        background: rgba(248, 242, 230, 0.62);
+      }
       #perch .tile {
         flex: none;
         display: block;
-        width: 62px;
-        height: 44px;
         padding: 0.25rem 0.1rem 0.1rem;
         border: 1px solid transparent;
         border-radius: 10px;
@@ -415,9 +439,6 @@
           background 0.25s,
           border-color 0.25s;
       }
-      #perch .tile.own {
-        margin-right: 0.35rem;
-      }
       #perch .tile:hover {
         background: rgba(241, 236, 227, 0.1);
       }
@@ -428,8 +449,34 @@
       #perch .tile svg {
         display: block;
         width: 100%;
-        height: 100%;
         filter: drop-shadow(0 1px 2px rgba(8, 18, 26, 0.5));
+      }
+      #perchKinds .tile {
+        width: 104px;
+        padding-bottom: 0.2rem;
+      }
+      #perchKinds .tile svg {
+        height: 54px;
+      }
+      #perchKinds .tile .name {
+        display: block;
+        margin-top: 0.12rem;
+        font-size: 0.66rem;
+        letter-spacing: 0.08em;
+        text-align: center;
+        color: rgba(246, 242, 234, 0.82);
+      }
+      #perchKinds .tile[aria-pressed='true'] .name {
+        color: #f6f2ea;
+      }
+      #perchPlumages .tile {
+        width: 66px;
+      }
+      #perchPlumages .tile svg {
+        height: 38px;
+      }
+      #perchPlumages .tile.own {
+        margin-right: 0.35rem;
       }
       :focus-visible {
         outline: 2px solid #f1e5b8;
@@ -509,7 +556,16 @@
       <noscript>JavaScript is needed to create this world.</noscript>
     </div>
     <div id="perch" inert role="group" aria-label="Choose a bird">
-      <div id="perchStrip"></div>
+      <div class="perchRow">
+        <span class="perchLabel" id="perchKindsLabel">shape</span>
+        <div class="perchStrip" id="perchKinds" role="group" aria-labelledby="perchKindsLabel"></div>
+        <div class="perchRail" aria-hidden="true"><div></div></div>
+      </div>
+      <div class="perchRow">
+        <span class="perchLabel" id="perchPlumagesLabel">colors</span>
+        <div class="perchStrip" id="perchPlumages" role="group" aria-labelledby="perchPlumagesLabel"></div>
+        <div class="perchRail" aria-hidden="true"><div></div></div>
+      </div>
     </div>
     <div id="hud" inert>
       <a id="shareLink" href="#" title="A link to this exact world">share this world</a>

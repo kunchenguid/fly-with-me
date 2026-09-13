@@ -3108,53 +3108,103 @@ function saveSettings() {
   });
 }
 // ---------------------------------------------------------------------------
-// The perch: the corner control opens a low strip of every bird, one group per
-// kind, the kind's own colors first and then every plumage. A pick swaps the
-// bird and its flock at once and is remembered with the kind; the strip closes
-// by itself, on Escape, or on a click anywhere else. Inert until Begin.
+// The perch: the corner control opens two strips, the kinds' shapes over the
+// colors of the kind now flying - its own colors first, then every plumage. A
+// pick in either strip swaps the bird and its flock at once and is remembered;
+// picking a kind keeps the plumage and refreshes the lower strip. An ordinary
+// vertical wheel scrolls a strip sideways, with no modifier key. The perch
+// closes by itself, on Escape, or on a click anywhere else. Inert until Begin.
 // ---------------------------------------------------------------------------
 const birdButton = document.getElementById('birdBtn'),
   perch = document.getElementById('perch'),
-  perchStrip = document.getElementById('perchStrip'),
+  kindStrip = document.getElementById('perchKinds'),
+  plumageStrip = document.getElementById('perchPlumages'),
   hudLine = document.getElementById('hud');
-const tiles = new Map();
-// The strip is built the first time it opens: eighty-odd inline tiles are not
-// worth paying for on a visit that never looks.
+const kindTiles = new Map(),
+  tiles = new Map();
+let shownKindId = null;
+const makeTile = (label, className = 'tile') => {
+  const tile = document.createElement('button');
+  tile.type = 'button';
+  tile.className = className;
+  tile.title = label;
+  tile.setAttribute('aria-label', label);
+  return tile;
+};
+// The strips are built the first time the perch opens: a few dozen inline
+// tiles are not worth paying for on a visit that never looks.
 function buildPerch() {
-  if (tiles.size) return;
+  if (kindTiles.size) return;
   for (const kind of BIRDS) {
-    const group = document.createElement('div');
-    group.className = 'perchGroup';
-    const label = document.createElement('span');
-    label.className = 'perchLabel';
-    label.textContent = kind.name;
-    group.append(label);
-    for (const v of catalog.variants) {
-      if (v.base !== kind) continue;
-      const tile = document.createElement('button');
-      tile.type = 'button';
-      tile.className = 'tile' + (v.plumage ? '' : ' own');
-      tile.dataset.variant = v.id;
-      tile.title = v.plumage ? `${v.name}, ${v.marking.id}` : `${v.name}, its own colors`;
-      tile.setAttribute('aria-label', tile.title);
-      tile.innerHTML = plumageTile(v);
-      tile.addEventListener('click', () => {
-        setBirdKind(v.base.id, v.plumage?.id ?? null);
-        armPerchIdle();
-      });
-      group.append(tile);
-      tiles.set(v.id, tile);
-    }
-    perchStrip.append(group);
+    const tile = makeTile(`Fly as ${/^[aeiou]/i.test(kind.name) ? 'an' : 'a'} ${kind.name}`);
+    tile.dataset.kind = kind.id;
+    tile.innerHTML = plumageTile(catalog.variantOf(kind, null)) + `<span class="name">${kind.name}</span>`;
+    tile.addEventListener('click', () => {
+      setBirdKind(kind.id, plumageId);
+      armPerchIdle();
+    });
+    kindStrip.append(tile);
+    kindTiles.set(kind.id, tile);
   }
   showBird();
 }
+// The lower strip is the one kind's colors, rebuilt whenever the kind changes.
+function buildPlumages(kind) {
+  shownKindId = kind.id;
+  tiles.clear();
+  plumageStrip.replaceChildren();
+  for (const v of catalog.variants) {
+    if (v.base !== kind) continue;
+    const tile = makeTile(v.plumage ? `${v.name}, ${v.marking.id}` : `${v.name}, its own colors`, 'tile' + (v.plumage ? '' : ' own'));
+    tile.dataset.variant = v.id;
+    tile.innerHTML = plumageTile(v);
+    tile.addEventListener('click', () => {
+      setBirdKind(v.base.id, v.plumage?.id ?? null);
+      armPerchIdle();
+    });
+    plumageStrip.append(tile);
+    tiles.set(v.id, tile);
+  }
+}
 function showBird() {
   birdButton.textContent = 'bird: ' + BIRD[birdKindId].name;
+  if (!kindTiles.size) return;
+  for (const [id, tile] of kindTiles) tile.setAttribute('aria-pressed', String(id === birdKindId));
+  if (shownKindId !== birdKindId) buildPlumages(BIRD[birdKindId]);
   const current = bird.userData.variant.id;
   for (const [id, tile] of tiles) tile.setAttribute('aria-pressed', String(id === current));
+  markOverflow();
 }
 showBird();
+// What is out of sight on a strip is told twice: the edge it can still be
+// scrolled toward fades, and its rail shows how much is in view and where.
+// A strip that fits fades neither edge and has no rail.
+function markOverflow() {
+  for (const strip of [kindStrip, plumageStrip]) {
+    const max = strip.scrollWidth - strip.clientWidth,
+      rail = strip.nextElementSibling;
+    strip.dataset.overflow = max < 1 ? '' : [strip.scrollLeft > 1 ? 'start' : '', strip.scrollLeft < max - 1 ? 'end' : ''].filter(Boolean).join(' ');
+    rail.classList.toggle('on', max >= 1);
+    rail.firstElementChild.style.width = `${((100 * strip.clientWidth) / strip.scrollWidth).toFixed(2)}%`;
+    rail.firstElementChild.style.marginLeft = `${((100 * strip.scrollLeft) / strip.scrollWidth).toFixed(2)}%`;
+  }
+}
+// A vertical wheel or trackpad swipe moves an overflowing strip sideways, so
+// the colors need no shift key; a native horizontal swipe is left to scroll.
+const WHEEL_LINE = 16;
+function wheelStrip(e) {
+  const strip = e.currentTarget,
+    max = strip.scrollWidth - strip.clientWidth;
+  if (max < 1 || !e.deltaY || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+  const step = e.deltaMode === 1 ? e.deltaY * WHEEL_LINE : e.deltaMode === 2 ? e.deltaY * strip.clientWidth : e.deltaY;
+  const before = strip.scrollLeft;
+  strip.scrollLeft = Math.max(0, Math.min(max, before + step));
+  if (strip.scrollLeft !== before) e.preventDefault();
+}
+for (const strip of [kindStrip, plumageStrip]) {
+  strip.addEventListener('wheel', wheelStrip, { passive: false });
+  strip.addEventListener('scroll', markOverflow, { passive: true });
+}
 let perchIdle = 0;
 const PERCH_IDLE_MS = 7000;
 function armPerchIdle() {
@@ -3173,7 +3223,9 @@ function openPerch() {
   perch.classList.add('open');
   birdButton.setAttribute('aria-expanded', 'true');
   showBird();
+  kindTiles.get(birdKindId)?.scrollIntoView({ block: 'nearest', inline: 'center' });
   tiles.get(bird.userData.variant.id)?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  markOverflow();
   armPerchIdle();
 }
 function closePerch() {
@@ -3614,7 +3666,10 @@ renderer.setAnimationLoop(frame);
 
 window.addEventListener('resize', () => {
   if (disposed) return;
-  if (perch.classList.contains('open')) placePerch();
+  if (perch.classList.contains('open')) {
+    placePerch();
+    markOverflow();
+  }
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setPixelRatio(renderScale());

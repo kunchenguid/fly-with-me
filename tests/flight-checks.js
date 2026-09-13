@@ -1071,10 +1071,11 @@ async function flightChecks() {
   button('muteBtn');
   assert(doc.getElementById('muteBtn').textContent === 'sound off' && z.muted, 'sound can be turned off again');
 
-  // The bird: the corner control cycles the kinds in the registry, every bird on
-  // the page becomes that kind where it is, a legged kind keeps its legs off the
-  // ground, a kind may move where the camera looks but not where it hangs, and
-  // the page remembers the choice.
+  // The bird: the corner control opens the perch's two strips, the kinds' shapes
+  // over the flying kind's colors; every bird on the page becomes what is picked
+  // where it is, a legged kind keeps its legs off the ground, a kind may move
+  // where the camera looks but not where it hangs, and the page remembers the
+  // choice.
   {
     const birds = z.library.birds,
       birdButton = doc.getElementById('birdBtn');
@@ -1084,15 +1085,29 @@ async function flightChecks() {
     assert(perch.inert && !perch.classList.contains('open'), 'the perch is closed and out of reach until the control opens it');
     birdButton.click();
     assert(perch.classList.contains('open') && !perch.inert, 'the corner control opens the perch');
-    const tiles = [...perch.querySelectorAll('.tile[data-variant]')];
+    const kindTiles = [...perch.querySelectorAll('#perchKinds .tile[data-kind]')],
+      colorTiles = () => [...perch.querySelectorAll('#perchPlumages .tile[data-variant]')];
     assert(
-      tiles.length === z.variants.length && birds.every((b) => tiles.some((t) => t.dataset.variant === b.id)),
-      'the perch holds every variant, each kind in its own colors first',
+      kindTiles.length === birds.length && birds.every((b) => kindTiles.some((t) => t.dataset.kind === b.id)),
+      'the upper strip holds every kind, one shape each',
     );
-    tiles.find((t) => t.dataset.variant === birds[1].id).click();
+    const colorsOf = (kind) => [kind, ...z.plumages.map((p) => kind + '-' + p)];
+    assert(
+      colorTiles()
+        .map((t) => t.dataset.variant)
+        .join() === colorsOf(birds[0].id).join(),
+      "the lower strip holds the flying kind's own colors first, then its plumages, and no other kind's",
+    );
+    kindTiles.find((t) => t.dataset.kind === birds[1].id).click();
     assert(
       z.bird === birds[1].id && z.plumage === null && z.objects.bird.userData.kindId === birds[1].id && birdButton.textContent.includes(birds[1].name),
-      'a tile flies that kind in its own colors and the control names it',
+      'a shape tile flies that kind in its own colors and the control names it',
+    );
+    assert(
+      colorTiles()
+        .map((t) => t.dataset.variant)
+        .join() === colorsOf(birds[1].id).join(),
+      'picking a kind refreshes the colors to that kind',
     );
     assert(z.objects.companions.every((b) => b.userData.kindId === birds[1].id), "the flock is the bird's own kind");
     assert(z.objects.bird.position.distanceTo(before) < 0.000001, 'changing the bird leaves it where it was');
@@ -1101,7 +1116,14 @@ async function flightChecks() {
     z.state.flapBurst = 5;
     z.step(0.05);
     assert(pivot.rotation.z !== hinge, 'the new kind beats its wings');
-    const plumageTile = tiles.find((t) => t.dataset.variant === birds[1].id + '-' + z.plumages[3]);
+    // The colors overflow their strip, and an ordinary vertical wheel - no
+    // shift - scrolls it sideways, with the reachable edge faded.
+    const colorStrip = doc.getElementById('perchPlumages');
+    assert(colorStrip.scrollWidth > colorStrip.clientWidth + 1 && colorStrip.dataset.overflow.includes('end'), 'the colors overflow their strip and its far edge fades');
+    const scrolledFrom = colorStrip.scrollLeft;
+    colorStrip.dispatchEvent(new win.WheelEvent('wheel', { deltaY: 120, deltaX: 0, bubbles: true, cancelable: true }));
+    assert(colorStrip.scrollLeft > scrolledFrom, 'a plain vertical wheel scrolls the colors sideways');
+    const plumageTile = colorTiles().find((t) => t.dataset.variant === birds[1].id + '-' + z.plumages[3]);
     plumageTile.click();
     assert(
       z.plumage === z.plumages[3] && z.objects.bird.userData.variant.id === plumageTile.dataset.variant && z.objects.bird.userData.kindId === birds[1].id,
@@ -1111,6 +1133,8 @@ async function flightChecks() {
       z.objects.companions.every((b) => b.userData.kindId === birds[1].id && b.userData.variant.plumage),
       "the flock wears the bird's kind and a plumage of its family",
     );
+    kindTiles.find((t) => t.dataset.kind === birds[2].id).click();
+    assert(z.bird === birds[2].id && z.plumage === z.plumages[3] && z.objects.bird.userData.variant.id === birds[2].id + '-' + z.plumages[3], 'picking a shape keeps the plumage');
     doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape' }));
     assert(!perch.classList.contains('open') && perch.inert, 'Escape closes the perch');
     z.setBird(birds[0].id);
