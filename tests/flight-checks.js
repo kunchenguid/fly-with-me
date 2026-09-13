@@ -226,6 +226,21 @@ async function flightChecks() {
       'the library refuses a neon bird and a two-segment wing, naming the bird',
     );
     assert(library.validate().length === 0, 'the library is whole again after the bird trial');
+    // Plumages and markings are entries too, refused by name.
+    const firstPlumage = library.plumages[0],
+      keptPlumage = firstPlumage.body,
+      firstMarking = library.markings[0];
+    firstPlumage.body = 0x00ff00;
+    firstMarking.body = () => true;
+    const plumageErrors = library.validate();
+    firstPlumage.body = keptPlumage;
+    delete firstMarking.body;
+    assert(
+      plumageErrors.some((e) => e.startsWith(`plumage ${firstPlumage.id}.body`) && e.includes('palette envelope')) &&
+        plumageErrors.some((e) => e.startsWith(`marking ${firstMarking.id}`) && e.includes('paint nothing')),
+      'the library refuses a neon plumage and a first marking that paints, naming them',
+    );
+    assert(library.validate().length === 0, 'the library is whole again after the plumage trial');
     const birdBody = z.objects.bird.children.find((o) => o.isMesh).geometry;
     const tightBird = library.validateBaked({ kind: 'bird', id: 'trial', budget: { triangles: 1 } }, birdBody);
     assert(tightBird.length === 1 && tightBird[0].startsWith('bird trial:'), 'a baked bird over its triangle budget is refused by name');
@@ -1065,10 +1080,19 @@ async function flightChecks() {
       birdButton = doc.getElementById('birdBtn');
     assert(!doc.getElementById('hud').inert && birdButton.textContent.includes(birds[0].name), 'after Begin the bird control is in reach and names the first kind');
     const before = z.objects.bird.position.clone();
+    const perch = doc.getElementById('perch');
+    assert(perch.inert && !perch.classList.contains('open'), 'the perch is closed and out of reach until the control opens it');
     birdButton.click();
+    assert(perch.classList.contains('open') && !perch.inert, 'the corner control opens the perch');
+    const tiles = [...perch.querySelectorAll('.tile[data-variant]')];
     assert(
-      z.bird === birds[1].id && z.objects.bird.userData.kindId === birds[1].id && birdButton.textContent.includes(birds[1].name),
-      'the corner control flies the next kind and names it',
+      tiles.length === z.variants.length && birds.every((b) => tiles.some((t) => t.dataset.variant === b.id)),
+      'the perch holds every variant, each kind in its own colors first',
+    );
+    tiles.find((t) => t.dataset.variant === birds[1].id).click();
+    assert(
+      z.bird === birds[1].id && z.plumage === null && z.objects.bird.userData.kindId === birds[1].id && birdButton.textContent.includes(birds[1].name),
+      'a tile flies that kind in its own colors and the control names it',
     );
     assert(z.objects.companions.every((b) => b.userData.kindId === birds[1].id), "the flock is the bird's own kind");
     assert(z.objects.bird.position.distanceTo(before) < 0.000001, 'changing the bird leaves it where it was');
@@ -1077,8 +1101,21 @@ async function flightChecks() {
     z.state.flapBurst = 5;
     z.step(0.05);
     assert(pivot.rotation.z !== hinge, 'the new kind beats its wings');
-    for (let i = 1; i < birds.length; i++) birdButton.click();
-    assert(z.bird === birds[0].id, 'the control cycles through every kind and back to the first');
+    const plumageTile = tiles.find((t) => t.dataset.variant === birds[1].id + '-' + z.plumages[3]);
+    plumageTile.click();
+    assert(
+      z.plumage === z.plumages[3] && z.objects.bird.userData.variant.id === plumageTile.dataset.variant && z.objects.bird.userData.kindId === birds[1].id,
+      'a plumage tile recolors the same kind',
+    );
+    assert(
+      z.objects.companions.every((b) => b.userData.kindId === birds[1].id && b.userData.variant.plumage),
+      "the flock wears the bird's kind and a plumage of its family",
+    );
+    doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape' }));
+    assert(!perch.classList.contains('open') && perch.inert, 'Escape closes the perch');
+    z.setBird(birds[0].id);
+    z.setPlumage(null);
+    assert(z.bird === birds[0].id && z.plumage === null && z.objects.bird.userData.variant.id === birds[0].id, 'the first kind in its own colors again');
     const legged = birds.find((b) => b.below > 0);
     if (legged) {
       z.setBird(legged.id);
@@ -1102,6 +1139,7 @@ async function flightChecks() {
       );
     }
     z.setBird(birds[1].id);
+    z.setPlumage(z.plumages[2]);
   }
   const performance = { ...z.renderer.info.render, ...z.perf };
   const left = {
@@ -1114,6 +1152,7 @@ async function flightChecks() {
     dayPhase: z.dayPhase,
     cam: { yaw: z.cam.yaw, pitch: z.cam.pitch, dist: z.cam.dist },
     bird: z.bird,
+    plumage: z.plumage,
   };
   const disposal = z.dispose();
   await disposal;
@@ -1156,8 +1195,10 @@ async function flightChecks() {
     again.z.bird === left.bird &&
       left.bird === again.z.library.birds[1].id &&
       again.z.objects.bird.userData.kindId === left.bird &&
+      again.z.plumage === left.plumage &&
+      again.z.objects.bird.userData.variant.id === left.bird + '-' + left.plumage &&
       again.doc.getElementById('birdBtn').textContent.includes(again.z.library.birds[1].name),
-    'the bird is remembered',
+    'the bird and its plumage are remembered',
   );
   assert(!again.z.running && again.z.audioState === 'not-created', 'a remembered flight still waits for Begin');
   assert(
@@ -1183,7 +1224,7 @@ async function flightChecks() {
     new URL(fresh.win.location.href).searchParams.get('seed') === String((left.seed + 1) >>> 0),
     'an explicit seed stays in the address as given',
   );
-  assert(fresh.z.volume === 0.4 && fresh.z.muted && fresh.z.bird === left.bird, 'settings carry over to another world, the bird included');
+  assert(fresh.z.volume === 0.4 && fresh.z.muted && fresh.z.bird === left.bird && fresh.z.plumage === left.plumage, 'settings carry over to another world, the bird and its plumage included');
   assert(fresh.z.intro.beat === 'side', 'another world opens with the opening again');
   await closeWorld(fresh);
   localStorage.clear();

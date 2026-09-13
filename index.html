@@ -330,6 +330,107 @@
       #hud[inert] {
         visibility: hidden;
       }
+      /* The perch: the bird chooser, a low strip above the controls line. */
+      #perch {
+        position: fixed;
+        left: max(1rem, env(safe-area-inset-left));
+        bottom: calc(max(0.7rem, env(safe-area-inset-bottom)) + 3.55rem);
+        max-width: min(760px, calc(100% - max(1rem, env(safe-area-inset-left)) - max(1rem, env(safe-area-inset-right))));
+        box-sizing: border-box;
+        padding: 0.5rem 0.6rem 0.4rem;
+        border-radius: 22px;
+        border: 1px solid rgba(241, 236, 227, 0.42);
+        background: rgba(14, 26, 34, 0.34);
+        backdrop-filter: blur(14px) saturate(1.15);
+        -webkit-backdrop-filter: blur(14px) saturate(1.15);
+        box-shadow:
+          inset 0 1px 0 rgba(248, 242, 230, 0.14),
+          0 10px 28px rgba(8, 18, 26, 0.18);
+        color: #f6f2ea;
+        z-index: 3;
+        opacity: 0;
+        transform: translateY(8px);
+        visibility: hidden;
+        transition:
+          opacity 0.4s ease,
+          transform 0.4s ease,
+          visibility 0s linear 0.4s;
+      }
+      #perch.open {
+        opacity: 1;
+        transform: none;
+        visibility: visible;
+        transition:
+          opacity 0.4s ease,
+          transform 0.4s ease;
+      }
+      #perchStrip {
+        display: flex;
+        gap: 0.55rem;
+        align-items: stretch;
+        overflow-x: auto;
+        scroll-snap-type: x proximity;
+        scrollbar-width: none;
+        padding: 0.65rem 0.2rem 0.1rem;
+      }
+      #perchStrip::-webkit-scrollbar {
+        display: none;
+      }
+      .perchGroup {
+        position: relative;
+        display: flex;
+        gap: 0.15rem;
+        align-items: flex-end;
+        padding-left: 0.5rem;
+        border-left: 1px solid rgba(241, 236, 227, 0.18);
+      }
+      .perchGroup:first-child {
+        border-left: 0;
+      }
+      .perchLabel {
+        position: absolute;
+        top: -0.62rem;
+        left: 0.55rem;
+        font-size: 0.56rem;
+        letter-spacing: 0.24em;
+        text-transform: lowercase;
+        color: rgba(246, 242, 234, 0.6);
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #perch .tile {
+        flex: none;
+        display: block;
+        width: 62px;
+        height: 44px;
+        padding: 0.25rem 0.1rem 0.1rem;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        background: none;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+        scroll-snap-align: center;
+        transition:
+          background 0.25s,
+          border-color 0.25s;
+      }
+      #perch .tile.own {
+        margin-right: 0.35rem;
+      }
+      #perch .tile:hover {
+        background: rgba(241, 236, 227, 0.1);
+      }
+      #perch .tile[aria-pressed='true'] {
+        border-color: rgba(248, 242, 230, 0.85);
+        background: rgba(241, 236, 227, 0.14);
+      }
+      #perch .tile svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        filter: drop-shadow(0 1px 2px rgba(8, 18, 26, 0.5));
+      }
       :focus-visible {
         outline: 2px solid #f1e5b8;
         outline-offset: 5px;
@@ -407,6 +508,9 @@
       <a id="retryLink" hidden>try WebGL2</a>
       <noscript>JavaScript is needed to create this world.</noscript>
     </div>
+    <div id="perch" inert role="group" aria-label="Choose a bird">
+      <div id="perchStrip"></div>
+    </div>
     <div id="hud" inert>
       <a id="shareLink" href="#" title="A link to this exact world">share this world</a>
       <button id="muteBtn" aria-label="Mute sound" title="Toggle sound" aria-pressed="false">sound on</button>
@@ -414,7 +518,7 @@
       <button id="pauseBtn" aria-label="Pause flight" title="Pause flight" aria-pressed="false" disabled>
         pause
       </button>
-      <button id="birdBtn" aria-label="Change the bird" title="Fly as another bird">bird: gull</button>
+      <button id="birdBtn" aria-label="Change the bird" title="Fly as another bird" aria-expanded="false" aria-controls="perch">bird: gull</button>
       <span id="backendLabel" class="dim"></span>
     </div>
 

@@ -4,6 +4,7 @@
 // the markup and the import map; the library (library/) holds every place.
 import * as THREE from 'three';
 import { buildBird, animateBird } from './birds.js';
+import { plumageCatalog, paintMarking, plumageTile } from './plumage.js';
 import {
   WebGPURenderer,
   MeshStandardNodeMaterial,
@@ -289,6 +290,9 @@ const BIOMES = registry.biomes,
   const errors = validateLibrary(registry);
   if (errors.length) throw new Error('scenery library: ' + errors.join('; '));
 }
+// Every kind in its own colors and in every plumage: the catalog the perch shows.
+const PLUMAGES = registry.plumages,
+  catalog = plumageCatalog(registry);
 // How rare the sites are: one site cell in this many carries a site, before
 // the biome's welcome. Cells are SITE_CELL meters wide.
 const SITE_CELL = 1200,
@@ -2088,21 +2092,25 @@ scene.add(cloudSea);
 const birdMaterial = propMaterial({ basic: { side: THREE.DoubleSide } });
 const birdKit = { THREE, merge: mergeParts, M };
 let birdKindId = BIRD[storedSettings.bird] ? storedSettings.bird : BIRDS[0].id;
+// The plumage is a second remembered field; null is the kind's own colors.
+let plumageId = catalog.has(storedSettings.plumage) ? storedSettings.plumage : null;
 const birdsMeasured = new Set();
-function dressBird(g, kindId, size = 1) {
+function dressBird(g, kindId, size = 1, plumage = plumageId) {
   for (const child of [...g.children]) {
     g.remove(child);
     child.traverse((o) => o.isMesh && o.geometry.dispose());
   }
   const kind = BIRD[kindId];
-  const built = buildBird(kind, birdKit);
-  if (!birdsMeasured.has(kindId)) {
+  // the kind in this plumage: recolored data for the kit, then the marking painted over
+  const variant = catalog.variantOf(kind, plumage);
+  const built = paintMarking(buildBird(variant.kind, birdKit), kind, variant.marking, variant.plumage?.accent);
+  if (!birdsMeasured.has(variant.id)) {
     // one kind is one budget: body and wings together, judged by entry name
     const whole = mergeParts([{ geometry: built.body }, ...built.wings.flatMap((w) => w.segments.map((seg) => ({ geometry: seg.geometry })))]);
     const errors = validateBaked(kind, whole);
     whole.dispose();
     if (errors.length) throw new Error('scenery library: ' + errors.join('; '));
-    birdsMeasured.add(kindId);
+    birdsMeasured.add(variant.id);
   }
   g.add(new THREE.Mesh(built.body, birdMaterial));
   const wings = [];
@@ -2128,14 +2136,15 @@ function dressBird(g, kindId, size = 1) {
   g.scale.setScalar((kind.scale ?? 1) * size);
   g.userData.kind = kind;
   g.userData.kindId = kindId;
+  g.userData.variant = variant;
   g.userData.wings = wings;
   g.userData.phase = Math.random() * 6.28;
   g.userData.flapAmp = 0.1;
   return g;
 }
-function makeBird(kindId, size = 1) {
+function makeBird(kindId, size = 1, plumage = plumageId) {
   const g = new THREE.Group();
-  dressBird(g, kindId, size);
+  dressBird(g, kindId, size, plumage);
   g.rotation.order = 'YXZ';
   return g;
 }
@@ -2148,18 +2157,21 @@ const birdBelow = () => (bird.userData.kind.below ?? 0) * bird.scale.y;
 // companions for the flock moments, always the bird's own kind
 const companions = [];
 for (let i = 0; i < 5; i++) {
-  const b = makeBird(birdKindId, BIRD[birdKindId].flock.scale);
+  const b = makeBird(birdKindId, BIRD[birdKindId].flock.scale, catalog.flock(plumageId, i));
   b.visible = false;
   scene.add(b);
   companions.push(b);
 }
 // The viewer's choice: every bird on the page becomes the kind, the page
 // remembers it, and a paused or waiting page shows it at once.
-function setBirdKind(kindId) {
+function setBirdKind(kindId, plumage = plumageId) {
   if (!BIRD[kindId]) throw new Error('unknown bird: ' + kindId);
+  if (plumage !== null && !catalog.has(plumage)) throw new Error('unknown plumage: ' + plumage);
   birdKindId = kindId;
-  dressBird(bird, kindId);
-  for (const b of companions) dressBird(b, kindId, BIRD[kindId].flock.scale);
+  plumageId = plumage;
+  dressBird(bird, kindId, 1, plumage);
+  // the flock is the bird's kind, in its plumage with a real flock's drift
+  companions.forEach((b, i) => dressBird(b, kindId, BIRD[kindId].flock.scale, catalog.flock(plumage, i)));
   showBird();
   saveSettings();
   if (!running || paused) {
@@ -3092,16 +3104,92 @@ function saveSettings() {
     muted: audio.muted,
     camera: { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist },
     bird: birdKindId,
+    plumage: plumageId,
   });
 }
-const birdButton = document.getElementById('birdBtn');
+// ---------------------------------------------------------------------------
+// The perch: the corner control opens a low strip of every bird, one group per
+// kind, the kind's own colors first and then every plumage. A pick swaps the
+// bird and its flock at once and is remembered with the kind; the strip closes
+// by itself, on Escape, or on a click anywhere else. Inert until Begin.
+// ---------------------------------------------------------------------------
+const birdButton = document.getElementById('birdBtn'),
+  perch = document.getElementById('perch'),
+  perchStrip = document.getElementById('perchStrip'),
+  hudLine = document.getElementById('hud');
+const tiles = new Map();
+// The strip is built the first time it opens: eighty-odd inline tiles are not
+// worth paying for on a visit that never looks.
+function buildPerch() {
+  if (tiles.size) return;
+  for (const kind of BIRDS) {
+    const group = document.createElement('div');
+    group.className = 'perchGroup';
+    const label = document.createElement('span');
+    label.className = 'perchLabel';
+    label.textContent = kind.name;
+    group.append(label);
+    for (const v of catalog.variants) {
+      if (v.base !== kind) continue;
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'tile' + (v.plumage ? '' : ' own');
+      tile.dataset.variant = v.id;
+      tile.title = v.plumage ? `${v.name}, ${v.marking.id}` : `${v.name}, its own colors`;
+      tile.setAttribute('aria-label', tile.title);
+      tile.innerHTML = plumageTile(v);
+      tile.addEventListener('click', () => {
+        setBirdKind(v.base.id, v.plumage?.id ?? null);
+        armPerchIdle();
+      });
+      group.append(tile);
+      tiles.set(v.id, tile);
+    }
+    perchStrip.append(group);
+  }
+  showBird();
+}
 function showBird() {
   birdButton.textContent = 'bird: ' + BIRD[birdKindId].name;
+  const current = bird.userData.variant.id;
+  for (const [id, tile] of tiles) tile.setAttribute('aria-pressed', String(id === current));
 }
 showBird();
-birdButton.addEventListener('click', () => {
-  const next = BIRDS[(BIRDS.findIndex((entry) => entry.id === birdKindId) + 1) % BIRDS.length];
-  setBirdKind(next.id);
+let perchIdle = 0;
+const PERCH_IDLE_MS = 7000;
+function armPerchIdle() {
+  clearTimeout(perchIdle);
+  perchIdle = setTimeout(closePerch, PERCH_IDLE_MS);
+}
+// The perch sits just above the controls line, however many lines that wraps to.
+function placePerch() {
+  perch.style.bottom = `${Math.round(window.innerHeight - hudLine.getBoundingClientRect().top + 8)}px`;
+}
+function openPerch() {
+  if (perch.classList.contains('open')) return;
+  buildPerch();
+  placePerch();
+  perch.inert = false;
+  perch.classList.add('open');
+  birdButton.setAttribute('aria-expanded', 'true');
+  showBird();
+  tiles.get(bird.userData.variant.id)?.scrollIntoView({ block: 'nearest', inline: 'center' });
+  armPerchIdle();
+}
+function closePerch() {
+  clearTimeout(perchIdle);
+  if (!perch.classList.contains('open')) return;
+  perch.classList.remove('open');
+  perch.inert = true;
+  birdButton.setAttribute('aria-expanded', 'false');
+}
+birdButton.addEventListener('click', () => (perch.classList.contains('open') ? closePerch() : openPerch()));
+for (const type of ['pointermove', 'pointerdown', 'focusin', 'wheel']) perch.addEventListener(type, armPerchIdle, { passive: true });
+document.addEventListener('pointerdown', (e) => {
+  if (!perch.contains(e.target) && !birdButton.contains(e.target)) closePerch();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closePerch();
 });
 const muteButton = document.getElementById('muteBtn'),
   volumeSlider = document.getElementById('volume');
@@ -3526,6 +3614,7 @@ renderer.setAnimationLoop(frame);
 
 window.addEventListener('resize', () => {
   if (disposed) return;
+  if (perch.classList.contains('open')) placePerch();
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setPixelRatio(renderScale());
@@ -3747,6 +3836,8 @@ window.__fly = {
     ruins: RUINS,
     props: PROPS,
     birds: BIRDS,
+    plumages: PLUMAGES,
+    markings: registry.markings,
     validate: () => validateLibrary(registry),
     validateBaked,
   },
@@ -3758,4 +3849,10 @@ window.__fly = {
     return birdKindId;
   },
   setBird: setBirdKind,
+  plumages: PLUMAGES.map((p) => p.id),
+  variants: catalog.variants.map((v) => v.id),
+  get plumage() {
+    return plumageId;
+  },
+  setPlumage: (plumage) => setBirdKind(birdKindId, plumage),
 };

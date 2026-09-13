@@ -172,12 +172,14 @@ export const defineSpecies = (species) => ({ kind: 'species', ...species });
 export const defineRuin = (ruin) => ({ kind: 'ruin', ...ruin });
 export const defineProp = (prop) => ({ kind: 'prop', ...prop });
 export const defineBird = (bird) => ({ kind: 'bird', ...bird });
+export const definePlumage = (plumage) => ({ kind: 'plumage', ...plumage });
+export const defineMarking = (marking) => ({ kind: 'marking', ...marking });
 
 // ---------------------------------------------------------------------------
 // Validation. Static shape here; baked geometry is measured by the engine
 // with validateBaked as each entry is built. Both name the entry.
 // ---------------------------------------------------------------------------
-export function validateLibrary({ biomes, species, ruins, props, birds = [] }) {
+export function validateLibrary({ biomes, species, ruins, props, birds = [], plumages = [], markings = [] }) {
   const errors = [];
   const color = (where, value) => {
     const problem = colorProblem(value);
@@ -200,6 +202,8 @@ export function validateLibrary({ biomes, species, ruins, props, birds = [] }) {
   idsOf(biomes, 'biome');
   idsOf(ruins, 'ruin');
   idsOf(birds, 'bird');
+  idsOf(plumages, 'plumage');
+  idsOf(markings, 'marking');
   for (const entry of species) {
     const where = `species ${entry.id}`;
     color(`${where}.trunk.tint`, entry.trunk?.tint);
@@ -280,6 +284,18 @@ export function validateLibrary({ biomes, species, ruins, props, birds = [] }) {
     if (bird.look && !(Number.isFinite(bird.look.rise) && Number.isFinite(bird.look.ahead) && Math.abs(bird.look.ahead) <= 3))
       errors.push(`${where}.look: needs a finite rise and an ahead within 3 m`);
   }
+  for (const plumage of plumages) {
+    const where = `plumage ${plumage.id}`;
+    if (typeof plumage.name !== 'string' || !plumage.name) errors.push(`${where}: needs a name for the perch`);
+    for (const key of ['body', 'wing', 'tip', 'beak', 'accent']) color(`${where}.${key}`, plumage[key]);
+  }
+  if (plumages.length && !markings.length) errors.push('markings: plumages need at least one marking, the plain one first');
+  markings.forEach((marking, i) => {
+    const where = `marking ${marking.id}`;
+    if (typeof marking.about !== 'string' || !marking.about) errors.push(`${where}: needs an about`);
+    for (const key of ['body', 'wing']) if (marking[key] !== undefined && typeof marking[key] !== 'function') errors.push(`${where}.${key}: must be a rule over a vertex`);
+    if (i === 0 && (marking.body || marking.wing)) errors.push(`${where}: the first marking must paint nothing, so a kind in its own colors is itself`);
+  });
   return errors;
 }
 
